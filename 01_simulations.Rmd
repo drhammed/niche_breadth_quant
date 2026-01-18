@@ -1,0 +1,423 @@
+---
+title: "Chapter 1- Niche Breadth Quantification: Simulations and Empirical Validation"
+author: "Hammed Akande"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 8
+)
+```
+
+# Introduction
+
+
+Generates community data under 12 different scenarios (combinations of response types, breadth distributions, and number of environmental variables) and calculates 9 niche breadth metrics for each.
+
+# Setup
+
+## Load Packages
+
+```{r load-packages}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  doParallel, foreach, data.table, ade4, tidyverse,
+  vegan, dplyr, reshape2, ggplot2, corrplot,
+  nicheROVER, hypervolume, mFD, ecoCopula, mgcv,terra, sf, sp, geodata, dismo
+)
+
+```
+
+## Source Functions and Config
+
+```{r source-functions}
+# Load config
+source("config.R")
+
+# Load all functions
+source("R/helper_functions.R")
+source("R/simulation_functions.R")
+source("R/theta_functions.R")
+source("R/niche_breadth_metrics.R")
+
+# Print config
+print_config()
+```
+
+# Part 1: Simulations
+
+## Setup Parallel Backend
+
+```{r setup-parallel}
+# Set up parallel processing
+cl <- makeCluster(NUM_CORES)
+registerDoParallel(cl)
+
+cat(sprintf("Parallel backend initialized with %d cores", NUM_CORES))
+```
+
+## Run All Scenarios
+
+Runs simulation scenarios in parallel. Each scenario involves:
+
+1. Generating community data with known niche breadths
+2. Converting abundance to presence-absence
+3. Calculating all 9 niche breadth metrics
+4. Repeating for `r N_REPS` iterations
+
+```{r run-simulations, cache=TRUE}
+
+set.seed(RANDOM_SEED)
+
+start <- Sys.time()
+
+# Function to run a single iteration
+run_iteration <- function(iteration, scenario) {
+
+  # Generate community
+  simul.com <- generate_community(
+    n_species = N_SPECIES,
+    n_sites = N_SITES,
+    n_env = scenario$n_env,
+    response_type = scenario$response_type,
+    breadth_distribution = scenario$breadth_distribution
+  )
+
+  sim.com <- simul.com$community_abundance_matrix
+
+  # Convert to presence-absence
+  sim.com[sim.com > 0] <- 1
+
+  # Get oracle niche breadth
+  niche.breadth <- simul.com$breadth.Oracle
+
+  # Get environmental variables
+  env_vars <- as.data.frame(simul.com$x)
+  colnames(env_vars) <- paste0("env.", 1:scenario$n_env)
+
+  # Calculate all metrics
+  # Co-occurrence metrics
+  co_occ <- co_occur(sim.com, N_SPECIES, reps = CO_OCCUR_REPS,
+                     psample = CO_OCCUR_PSAMPLE, psample2 = CO_OCCUR_PSAMPLE2)
+
+  # OMI tolerance
+  omi_result <- omi_params_fun(env_vars, sim.com)
+
+  # nicheROVER hypervolume
+  nr_result <- nr_hypervolume_fun(sim.com, env_vars, nsamples = NICHE_ROVER_NSAMPLES)
+
+  # Blondel hypervolume
+  hv_result <- hypervolume_blond_fun(sim.com, env_vars)
+
+  # GAM-based niche breadth
+  gam_result <- estimate_nicheBreadth_Gam(sim.com, env_vars, verbose = FALSE)
+
+  # Latent variable model
+  latent_result <- estimate_nicheBreadth_Latents(sim.com, env_vars, nlv = NLV, verbose = FALSE)
+
+  # Average distance
+  dist_result <- estimate_nicheBreadth_avg.Dist(sim.com, env_vars)
+
+  # Combine results
+  result <- data.frame(
+    iteration = iteration,
+    sci.name = co_occ$sci.name,
+    niche_breadth = niche.breadth[match(co_occ$sci.name, names(niche.breadth))],
+    SimpSSI = co_occ$multi.sim,
+    beta.a = co_occ$Beta.a,
+    beta.w = co_occ$Beta.w,
+    om_tol = omi_result$om_tol[match(co_occ$sci.name, omi_result$sci.name)],
+    nr_hv = nr_result$nr_hypervolume[match(co_occ$sci.name, nr_result$sci.name)],
+    hv_blond = hv_result$hypervolume[match(co_occ$sci.name, hv_result$sci.name)],
+    nb_Gam = gam_result$Niche_Breadth[match(co_occ$sci.name, rownames(gam_result))],
+    nb_latent = latent_result[match(co_occ$sci.name, names(latent_result))],
+    nb_dist = dist_result[match(co_occ$sci.name, names(dist_result))],
+    stringsAsFactors = FALSE
+  )
+
+  return(result)
+}
+
+# Run all scenarios
+all_results <- list()
+
+for (i in 1:nrow(SCENARIOS)) {
+  scenario <- SCENARIOS[i, ]
+  message(sprintf("\n=== Running Scenario %d/%d: %s ===",
+                  i, nrow(SCENARIOS), scenario$name))
+
+  start_time <- Sys.time()
+
+  # Parallel execution of iterations
+  scenario_results <- foreach(
+    iteration = 1:N_REPS,
+    .packages = c("pacman", "ade4", "nicheROVER", "hypervolume",
+                  "ecoCopula", "mgcv", "vegan", "tidyr"),
+    .export = c("generate_community", "generate_abundances_symmetric",
+                "generate_abundances_asymmetric", "generate_breadth_params",
+                "weighted.variance", "co_occur", "omi_params_fun",
+                "nr_hypervolume_fun", "hypervolume_blond_fun",
+                "estimate_nicheBreadth_Gam", "estimate_nicheBreadth_Latents",
+                "estimate_nicheBreadth_avg.Dist", "fit_gam", "eliminate_cols",
+                "N_SPECIES", "N_SITES", "CO_OCCUR_REPS", "CO_OCCUR_PSAMPLE",
+                "CO_OCCUR_PSAMPLE2", "NICHE_ROVER_NSAMPLES", "NLV")
+  ) %dopar% {
+
+    # Load packages within parallel worker
+    pacman::p_load(ade4, nicheROVER, hypervolume, ecoCopula, mgcv, vegan, tidyr)
+
+    run_iteration(iteration, scenario)
+  }
+
+  # Combine results
+  result_df <- do.call(rbind, scenario_results)
+
+  # Store in list
+  all_results[[scenario$name]] <- result_df
+
+  # Save to RDS
+  output_file <- file.path("results/simulations",
+                           paste0("result_df_", scenario$name, ".rds"))
+  saveRDS(result_df, output_file)
+
+  end_time <- Sys.time()
+  cat(sprintf("Completed in %.2f minutes",
+                  as.numeric(difftime(end_time, start_time, units = "mins"))))
+}
+
+cat("\n=== All simulations complete! ===")
+
+end <- Sys.time()
+end - start
+
+```
+
+## Summary of Simulation Results
+
+```{r simulation-summary}
+# Summarize results
+summary_df <- data.frame(
+  scenario = names(all_results),
+  n_obs = sapply(all_results, nrow),
+  n_species = sapply(all_results, function(x) length(unique(x$sci.name))),
+  n_iterations = sapply(all_results, function(x) max(x$iteration))
+)
+
+knitr::kable(summary_df, caption = "Summary of Simulation Results")
+
+```
+
+
+# Part 2: Empirical Validation
+
+## Load BBS Species Data
+
+```{r load-bbs-data}
+# Check if data file exists
+if (!file.exists(SPECIES_DATA_FILE)) {
+  stop("Species data file not found. Please load the species data to data/ folder.")
+}
+
+spp_mod <- read.csv(SPECIES_DATA_FILE) %>%
+  dplyr::select(id, year, aou, species, count, Latitude, Longitude, State)
+
+# Remove duplicates
+spp_mod <- spp_mod %>%
+  dplyr::arrange(species, Latitude, Longitude, desc(year)) %>%
+  dplyr::distinct(species, Latitude, Longitude, .keep_all = TRUE)
+
+cat(sprintf("Loaded %d records for %d species",
+                nrow(spp_mod), length(unique(spp_mod$species))))
+```
+
+## Extract Climate Data
+
+```{r extract-climate}
+# Create bioclim directory if not already
+if (!dir.exists(BIOCLIM_DIR)) {
+  dir.create(BIOCLIM_DIR, recursive = TRUE)
+}
+
+# Load bioclim data
+Bioclimdata <- geodata::worldclim_global(var = 'bio', res = 2.5,
+                                          download = FALSE, path = BIOCLIM_DIR)
+
+
+if(!dir.exists("data/bioclim_fut")){
+  dir.create("data/bioclim_fut", recursive = TRUE)
+}
+
+clim_fut <- geodata::cmip6_world(model = "ACCESS-ESM1-5", ssp = "245", time = "2041-2060", var = "bioc", download=F, res = 10, path = 'data/bioclim_fut')
+
+#clim_fut
+
+#rename te bioclim data to "bio01"..."bio19"
+names(Bioclimdata) <- names(clim_fut)
+
+
+# Extract climate for species locations
+clim_mod <- cbind(spp_mod,
+                  terra::extract(x = Bioclimdata,
+                                 y = data.frame(spp_mod[, c("Longitude", "Latitude")]),
+                                 cells = TRUE))
+
+# Replace NAs
+clim_mod[, 10:28][is.na(clim_mod[, 10:28])] <- 0
+
+```
+
+## PCA on Climate Variables
+
+```{r climate-pca}
+# PCA on 19 bioclim variables
+clim_pca <- prcomp(clim_mod[, 10:28], scale. = TRUE)
+
+summary(clim_pca)
+
+# Extract first 4 components (90% variance explained)
+pca_scores <- clim_pca$x[, 1:N_PCA_COMPONENTS]
+
+# Combine with coordinates
+clim_pca_df <- cbind(spp_mod[, c("id", "Longitude", "Latitude")], pca_scores)
+clim_pca_df <- clim_pca_df %>% distinct()
+
+colnames(clim_pca_df) <- c("id", "Longitude", "Latitude",
+                            paste0("env", 1:N_PCA_COMPONENTS))
+
+# Join back to species data
+spp_mod <- spp_mod %>%
+  inner_join(clim_pca_df, by = c("id", "Longitude", "Latitude"))
+```
+
+## Prepare Empirical Dataset
+
+```{r prepare-empirical}
+# Create wide-format data
+bbs_wide <- reshape2::dcast(spp_mod,
+                            id + State + year + Longitude + Latitude +
+                              env1 + env2 + env3 + env4 ~ species,
+                            value.var = "count", fun.aggregate = sum)
+
+# Filter by year
+bbs_sub <- bbs_wide %>%
+  dplyr::filter(year >= BBS_YEAR_MIN)
+
+# Select species with sufficient occurrences
+species_cols <- 10:ncol(bbs_sub)
+valid_species <- which(colSums(bbs_sub[, species_cols]) >= MIN_SPECIES_OCCURRENCES)
+
+
+if (!is.null(EMPIRICAL_SPECIES)) {                                                            
+    # Use fixed species list from config         
+    all_species_names <- colnames(bbs_sub)[species_cols]
+    selected_species <- which(all_species_names %in% EMPIRICAL_SPECIES)
+    cat(sprintf("Using %d fixed species from config\n", length(selected_species)))
+  } else {                                                                                      
+    # Randomly sample species                                                                   
+    set.seed(RANDOM_SEED)                                                                       
+    selected_species <- sample(valid_species, min(N_EMPIRICAL_SPECIES, length(valid_species)))
+    cat(sprintf("Randomly selected %d species\n", length(selected_species)))
+  }
+
+# Extract selected species
+bbs_mod <- bbs_sub[, c(1:9, (9 + selected_species))]
+
+# Create presence-absence matrix
+sim.com <- bbs_mod[, 10:ncol(bbs_mod)]
+sim.com[sim.com > 0] <- 1
+
+# Environmental variables
+env_vars <- bbs_mod[, c("env1", "env2", "env3", "env4")]
+
+cat(sprintf("Empirical dataset: %d sites, %d species",
+                nrow(sim.com), ncol(sim.com)))
+```
+
+## Calculate Metrics for Empirical Data
+
+```{r calculate-empirical-metrics}
+
+cat("Calculating niche breadth metrics for empirical data...")
+
+start <- Sys.time()
+
+# Co-occurrence metrics
+co_occ <- co_occur(sim.com, ncol(sim.com), reps = CO_OCCUR_REPS, 
+                   psample = 10, psample2 = 10,
+                   species_names = colnames(sim.com))  
+
+# OMI tolerance
+omi_result <- omi_params_fun(env_vars, sim.com)
+
+# nicheROVER hypervolume
+nr_result <- nr_hypervolume_fun(sim.com, env_vars, nsamples = NICHE_ROVER_NSAMPLES)
+
+# Blondel hypervolume
+hv_result <- hypervolume_blond_fun(sim.com, env_vars)
+
+# GAM-based niche breadth
+gam_result <- estimate_nicheBreadth_Gam(sim.com, env_vars, verbose = FALSE)
+
+# Latent variable model
+latent_result <- estimate_nicheBreadth_Latents(sim.com, env_vars, nlv = NLV, verbose = FALSE)
+
+# Average distance
+dist_result <- estimate_nicheBreadth_avg.Dist(sim.com, env_vars)
+
+# Combine empirical results
+result_df_empirical <- data.frame(
+  sci.name = co_occ$sci.name,
+  SimpSSI = co_occ$multi.sim,
+  beta.a = co_occ$Beta.a,
+  beta.w = co_occ$Beta.w,
+  om_tol = omi_result$om_tol[match(co_occ$sci.name, omi_result$sci.name)],
+  nr_hv = nr_result$nr_hypervolume[match(co_occ$sci.name, nr_result$sci.name)],
+  hv_blond = hv_result$hypervolume[match(co_occ$sci.name, hv_result$sci.name)],
+  nb_Gam = gam_result$Niche_Breadth[match(co_occ$sci.name, rownames(gam_result))],
+  nb_latent = latent_result[match(co_occ$sci.name, names(latent_result))],
+  nb_dist = dist_result[match(co_occ$sci.name, names(dist_result))],
+  stringsAsFactors = FALSE
+)
+
+# Save empirical results
+saveRDS(result_df_empirical, "results/empirical/result_df_empirical.rds")
+
+cat("Empirical validation complete!")
+
+end <- Sys.time()
+end - start
+
+
+```
+
+## Summary of Empirical Results
+
+```{r empirical-summary}
+knitr::kable(head(result_df_empirical),
+             caption = "Sample of Empirical Niche Breadth Results")
+
+# Correlation matrix
+cor_mat <- cor(result_df_empirical[, -1], method = "spearman", use = "complete.obs")
+corrplot::corrplot.mixed(cor_mat, tl.pos = "lt", tl.cex = 0.6)
+
+```
+
+# Cleanup
+
+```{r cleanup}
+# Stop parallel cluster
+stopCluster(cl)
+
+cat("\nAll analyses complete!")
+```
+

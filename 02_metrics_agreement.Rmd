@@ -1,0 +1,867 @@
+---
+title: "Niche Breadth Metrics: Agreement Analysis"
+author: "Hammed Akande"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 12,
+  fig.height = 10
+)
+```
+
+# Introduction
+
+This markdown analyzes metrics agreement among 9 niche breadth metrics across 12 simulation scenarios and empirical data. Here, I examine:
+
+1. Correlation between metrics and known niche breadth
+2. Agreement among metrics across scenarios
+3. Metric behavior using PCA and clustering
+4. Comparison with empirical results
+
+# Setup
+
+```{r load-packages}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  tidyverse, ggplot2, corrplot, pheatmap, ComplexHeatmap,
+  FactoMineR, MatrixCorrelation, ggcorrplot, viridis,
+  jsonlite, knitr, ggpubr
+)
+
+# configuration
+source("config.R")
+source("R/helper_functions.R")
+```
+
+# Load Results
+
+```{r load-results}
+# Load all simulation results
+results_dir <- "results/simulations"
+rds_files <- list.files(results_dir, pattern = "\\.rds$", full.names = TRUE)
+
+# Load each scenario
+all_results <- list()
+for (file in rds_files) {
+  obj_name <- tools::file_path_sans_ext(basename(file))
+  all_results[[obj_name]] <- readRDS(file)
+}
+
+# Load empirical results
+empirical_file <- "results/empirical/result_df_empirical.rds"
+if (file.exists(empirical_file)) {
+  result_df_empirical <- readRDS(empirical_file)
+  message(sprintf("Loaded %d scenario results + empirical data", length(all_results)))
+} else {
+  message(sprintf("Loaded %d scenario results (no empirical data found)", length(all_results)))
+}
+```
+
+# Aggregate Results by Species
+
+For each scenario, aggregate metrics across iterations to get mean values per species.
+
+```{r aggregate-results}
+aggregate_niche_breadth <- function(df) {
+  df %>%
+    dplyr::group_by(sci.name) %>%
+    dplyr::summarise(dplyr::across(SimpSSI:nb_dist, ~mean(.x, na.rm = TRUE)))
+}
+
+# Aggregate all scenario results
+aggregated_results <- lapply(all_results, function(df) {
+  if ("iteration" %in% colnames(df)) {
+    aggregate_niche_breadth(df)
+  } else {
+    df
+  }
+})
+
+# Add empirical data
+if (exists("result_df_empirical")) {
+  aggregated_results[["Empirical"]] <- result_df_empirical
+}
+
+# Create matrices list for analysis
+matrices_list <- aggregated_results
+```
+
+# Part 1: Correlation with known niche breadth
+
+## Calculate Correlations per Scenario
+
+```{r oracle-correlations}
+# Correlation with oracle for each iteration
+calculate_iteration_correlations <- function(df) {
+  if (!"niche_breadth" %in% colnames(df)) return(NULL)
+
+  metric_cols <- setdiff(colnames(df), c("iteration", "sci.name", "niche_breadth"))
+
+  iterations <- unique(df$iteration)
+  results <- list()
+
+  for (iter in iterations) {
+    iter_df <- df[df$iteration == iter, ]
+    corrs <- sapply(metric_cols, function(col) {
+      cor(iter_df$niche_breadth, iter_df[[col]],
+          method = "spearman", use = "complete.obs")
+    })
+    results[[as.character(iter)]] <- corrs
+  }
+
+  do.call(rbind, results)
+}
+
+# Calculate correlations for all scenarios with oracle
+oracle_correlations <- list()
+for (name in names(all_results)) {
+  df <- all_results[[name]]
+  if ("niche_breadth" %in% colnames(df)) {
+    corr_mat <- calculate_iteration_correlations(df)
+    oracle_correlations[[name]] <- corr_mat
+  }
+}
+```
+
+## Mean Correlations per Scenario
+
+```{r mean-correlations}
+# Calculate mean correlation across iterations
+mean_corrs <- lapply(oracle_correlations, function(mat) {
+  colMeans(mat, na.rm = TRUE)
+})
+
+mean_corr_df <- as.data.frame(do.call(rbind, mean_corrs))
+mean_corr_df$scenario <- rownames(mean_corr_df)
+
+# Reshape for plotting
+mean_corr_long <- tidyr::pivot_longer(mean_corr_df,
+                                       cols = -scenario,
+                                       names_to = "metric",
+                                       values_to = "correlation")
+
+# Heatmap of correlations
+ggplot(mean_corr_long, aes(x = metric, y = scenario, fill = correlation)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                       midpoint = 0, limits = c(-1, 1)) +
+  geom_text(aes(label = sprintf("%.2f", correlation)), size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Mean Spearman Correlation with Oracle Niche Breadth",
+       x = "Metric", y = "Scenario", fill = "r")
+
+
+```
+
+## Correlation Summary Table
+
+```{r correlation-table}
+knitr::kable(round(mean_corr_df[, -ncol(mean_corr_df)], 3),
+             caption = "Mean Spearman Correlations with Oracle Niche Breadth")
+```
+
+# Part 2: Metric Behavior Across Scenarios
+
+## Mean Metric Values
+
+```{r mean-values}
+metrics <- setdiff(names(matrices_list[[1]]), "sci.name")
+
+# Calculate mean of each metric across species for every scenario
+mean_df_list <- lapply(names(matrices_list), function(nm) {
+  df <- matrices_list[[nm]][, metrics]
+  colMeans(df, na.rm = TRUE)
+})
+mean_df <- do.call(rbind, mean_df_list)
+rownames(mean_df) <- names(matrices_list)
+mean_df <- as.data.frame(mean_df)
+
+# Scale for comparison
+mean_scaled <- as.data.frame(scale(mean_df))
+```
+
+## Heatmap of Scaled Mean Values
+
+```{r mean-heatmap, fig.width=10, fig.height=8}
+pheatmap(mean_scaled,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         display_numbers = TRUE,
+         number_format = "%.2f",
+         main = "Scaled Mean Metric Values Across Scenarios",
+         fontsize = 10)
+```
+
+## PCA on Mean Values
+
+```{r pca-mean}
+pca_mean <- PCA(mean_scaled, graph = FALSE)
+
+# Eigenvalues
+cat("Eigenvalues:\n")
+print(round(pca_mean$eig, 2))
+
+# Variable loadings
+loadings_mean <- as.data.frame(pca_mean$var$coord)
+loadings_mean$Metric <- rownames(loadings_mean)
+
+# Factor map - variables
+ggplot(loadings_mean, aes(x = Dim.1, y = Dim.2, label = Metric)) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_text(nudge_y = 0.1, size = 4) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+  labs(title = "Mean-based PCA: Metric Loadings",
+       x = sprintf("PC1 (%.1f%% variance)", pca_mean$eig[1, 2]),
+       y = sprintf("PC2 (%.1f%% variance)", pca_mean$eig[2, 2])) +
+  theme_minimal()
+
+# Factor map - scenarios
+scores_mean <- as.data.frame(pca_mean$ind$coord)
+scores_mean$Scenario <- rownames(scores_mean)
+
+ggplot(scores_mean, aes(x = Dim.1, y = Dim.2, label = Scenario)) +
+  geom_point(size = 3, color = "darkred") +
+  geom_text(nudge_y = 0.2, size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+  labs(title = "Mean-based PCA: Scenario Scores",
+       x = sprintf("PC1 (%.1f%% variance)", pca_mean$eig[1, 2]),
+       y = sprintf("PC2 (%.1f%% variance)", pca_mean$eig[2, 2])) +
+  theme_minimal()
+```
+
+## Metric Contribution to PC1
+
+```{r pc1-contribution}
+ggplot(loadings_mean, aes(x = reorder(Metric, Dim.1), y = Dim.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Metric Loadings on PC1",
+       x = "Metric", y = "Loading on PC1") +
+  theme_minimal()
+```
+
+# Part 3: Metric Variability
+
+## Coefficient of Variation Across Scenarios
+
+```{r cv-analysis}
+# Calculate CV for each metric in each scenario
+calculate_cv <- function(df, metric_cols) {
+  sapply(metric_cols, function(m) {
+    x <- df[[m]]
+    mval <- mean(x, na.rm = TRUE)
+    if (is.na(mval) || mval == 0) NA else sd(x, na.rm = TRUE) / mval
+  })
+}
+
+cv_list <- lapply(matrices_list, function(df) {
+  calculate_cv(df, metrics)
+})
+
+cv_df <- do.call(rbind, cv_list)
+rownames(cv_df) <- names(matrices_list)
+cv_df <- as.data.frame(cv_df)
+
+# PCA on CV patterns
+cv_scaled <- as.data.frame(scale(cv_df))
+pca_cv <- PCA(cv_scaled, graph = FALSE)
+
+cat("\nCV-based PCA Eigenvalues:\n")
+print(round(pca_cv$eig, 2))
+```
+
+## Variability Across Scenarios
+
+```{r variability-plot}
+# Standard deviation of mean values across scenarios
+metric_sd <- apply(mean_df, 2, sd, na.rm = TRUE)
+metric_var_df <- data.frame(Metric = names(metric_sd), SD = metric_sd)
+
+ggplot(metric_var_df, aes(x = reorder(Metric, -SD), y = SD)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Metric Variability Across Scenarios",
+       subtitle = "Standard deviation of mean values",
+       x = "Metric", y = "SD across scenarios") +
+  theme_minimal()
+```
+
+# Part 4: Inter-Metric Relationships
+
+## Correlation Structure per Scenario
+
+```{r correlation-structure}
+# Flatten lower triangle of correlation matrix
+flatten_corr <- function(mat) {
+  mat[lower.tri(mat, diag = FALSE)]
+}
+
+# Calculate Spearman correlation matrix for each scenario
+corr_list <- lapply(matrices_list, function(df) {
+  cor(df[, metrics], method = "spearman", use = "pairwise.complete.obs")
+})
+
+# Flatten correlation vectors
+corr_flat_list <- lapply(corr_list, flatten_corr)
+corr_df <- do.call(rbind, corr_flat_list)
+rownames(corr_df) <- names(matrices_list)
+corr_df <- as.data.frame(corr_df)
+
+# PCA on correlation patterns
+corr_scaled <- as.data.frame(scale(corr_df))
+pca_corr <- PCA(corr_scaled, graph = FALSE)
+
+cat("Correlation-structure PCA Eigenvalues:\n")
+print(round(pca_corr$eig, 2))
+```
+
+## Correlation Structure PCA
+
+```{r corr-pca-plot}
+scores_corr <- as.data.frame(pca_corr$ind$coord)
+scores_corr$Scenario <- rownames(scores_corr)
+
+ggplot(scores_corr, aes(x = Dim.1, y = Dim.2, label = Scenario)) +
+  geom_point(size = 3, color = "darkgreen") +
+  geom_text(nudge_y = 0.2, size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+  labs(title = "Correlation-Structure PCA: Scenarios",
+       subtitle = "How similar are inter-metric relationships across scenarios?",
+       x = sprintf("PC1 (%.1f%% variance)", pca_corr$eig[1, 2]),
+       y = sprintf("PC2 (%.1f%% variance)", pca_corr$eig[2, 2])) +
+  theme_minimal()
+```
+
+# Part 5: Empirical Data Comparison
+
+```{r empirical-analysis, eval=exists("result_df_empirical")}
+# Pairwise metric correlations for empirical data
+emp_cor_mat <- cor(result_df_empirical[, -1], method = "spearman",
+                   use = "pairwise.complete.obs")
+
+ggcorrplot(emp_cor_mat, lab = TRUE, lab_size = 3,
+           title = "Metric Correlations - Empirical Data")
+
+# Hierarchical clustering
+dist_mat <- as.dist(1 - emp_cor_mat)
+hclust_res <- hclust(dist_mat, method = "average")
+plot(hclust_res, main = "Metric Clustering - Empirical Data")
+```
+
+## Classification Agreement (Empirical)
+
+```{r classification-agreement, eval=exists("result_df_empirical")}
+# Classify species as specialists/generalists using quantiles
+classify_species <- function(x) {
+  q1 <- quantile(x, 0.25, na.rm = TRUE)
+  q3 <- quantile(x, 0.75, na.rm = TRUE)
+  ifelse(x <= q1, "Specialist", ifelse(x >= q3, "Generalist", "Other"))
+}
+
+# Apply classification to all metrics
+classifications <- result_df_empirical
+for (metric in metrics) {
+  classifications[[metric]] <- classify_species(result_df_empirical[[metric]])
+}
+
+# Majority vote
+majority_vote <- function(row) {
+  counts <- table(row)
+  if ("Specialist" %in% names(counts) && "Generalist" %in% names(counts)) {
+    if (counts["Specialist"] > counts["Generalist"]) return("Specialist")
+    else return("Generalist")
+  } else if ("Specialist" %in% names(counts)) {
+    return("Specialist")
+  } else if ("Generalist" %in% names(counts)) {
+    return("Generalist")
+  } else {
+    return("Other")
+  }
+}
+
+classifications$majority <- apply(classifications[, metrics], 1, majority_vote)
+
+# Agreement score
+classifications$agreement_score <- apply(classifications[, metrics], 1, function(row) {
+  mv <- majority_vote(row)
+  sum(row == mv, na.rm = TRUE) / sum(!is.na(row))
+})
+
+# Plot agreement
+ggplot(classifications, aes(x = majority, y = agreement_score)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Classification Consistency",
+       subtitle = "How often do metrics agree on specialist/generalist classification?",
+       x = "Majority Classification", y = "Agreement Score") +
+  theme_minimal()
+
+# Pairwise agreement matrix
+agreement_matrix <- matrix(NA, ncol = length(metrics), nrow = length(metrics))
+colnames(agreement_matrix) <- metrics
+rownames(agreement_matrix) <- metrics
+
+for (i in seq_along(metrics)) {
+  for (j in seq_along(metrics)) {
+    agreement_matrix[i, j] <- mean(
+      classifications[[metrics[i]]] == classifications[[metrics[j]]],
+      na.rm = TRUE
+    )
+  }
+}
+
+ggcorrplot(agreement_matrix, lab = TRUE, lab_size = 3,
+           title = "Pairwise Classification Agreement")
+```
+
+# Summary
+
+```{r summary}
+# Best performing metrics (highest mean correlation with oracle)
+if (nrow(mean_corr_df) > 0) {
+  overall_mean_corr <- colMeans(mean_corr_df[, -ncol(mean_corr_df)], na.rm = TRUE)
+  best_metrics <- sort(overall_mean_corr, decreasing = TRUE)
+
+  cat("Metrics ranked by mean correlation with oracle:\n")
+  print(round(best_metrics, 3))
+}
+```
+
+# Publication Figures
+
+```{r setup-figures-dir}
+# Figures directory
+figures_dir <- "results/figures"
+if (!dir.exists(figures_dir)) {
+  dir.create(figures_dir, recursive = TRUE)
+}
+
+# Publication theme
+theme_publication <- function(base_size = 12) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.title = element_text(face = "bold", size = rel(1.2), hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(color = "black"),
+      legend.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank(),
+      strip.text = element_text(face = "bold")
+    )
+}
+```
+
+## Figure 1: Oracle Correlation Heatmap
+
+```{r fig1-heatmap, fig.width=12, fig.height=8}
+# Parse scenario names to extract components
+parse_scenario <- function(scenario_name) {
+  # Extract components from names
+  name_clean <- gsub("result_df_", "", scenario_name)
+
+  response_type <- ifelse(grepl("^Sym_", name_clean), "Symmetric", "Asymmetric")
+
+  distribution <- case_when(
+    grepl("uniform", name_clean) ~ "Uniform",
+    grepl("normal", name_clean) ~ "Normal",
+    grepl("gamma", name_clean) ~ "Gamma",
+    TRUE ~ "Unknown"
+  )
+
+  n_env <- ifelse(grepl("env1", name_clean), "1 Env", "2 Env")
+
+  data.frame(
+    scenario = scenario_name,
+    response_type = response_type,
+    distribution = distribution,
+    n_env = n_env,
+    label = paste(response_type, distribution, n_env, sep = " / ")
+  )
+}
+
+# Create scenario metadata
+scenario_meta <- do.call(rbind, lapply(rownames(mean_corr_df), parse_scenario))
+
+# Add metadata to correlation data
+mean_corr_plot <- mean_corr_long %>%
+  left_join(scenario_meta, by = "scenario")
+
+# Create heatmap with better labeling
+fig1_heatmap <- ggplot(mean_corr_plot, aes(x = metric, y = label, fill = correlation)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  scale_fill_gradient2(
+    low = "#2166AC", mid = "white", high = "#B2182B",
+    midpoint = 0, limits = c(-1, 1),
+    name = "Spearman\nCorrelation"
+  ) +
+  geom_text(aes(label = sprintf("%.2f", correlation)), size = 3.5, color = "black") +
+  #scale_x_discrete(position = "top") +
+  labs(
+    title = "Metric Performance Across Simulation Scenarios",
+    subtitle = "Correlation between each metric and true niche breadth",
+    x = "Niche Breadth Metric",
+    y = "Scenario"
+  ) +
+  theme_publication() +
+  theme(
+    #axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    axis.text.y = element_text(size = 10),
+    legend.position = "right"
+  )
+
+print(fig1_heatmap)
+
+# Save
+ggsave(file.path(figures_dir, "fig1_oracle_correlation_heatmap.png"),
+       fig1_heatmap, width = 12, height = 8, dpi = 300)
+ggsave(file.path(figures_dir, "fig1_oracle_correlation_heatmap.pdf"),
+       fig1_heatmap, width = 12, height = 8)
+```
+
+## Figure 2: Boxplots by Number of Environments
+
+```{r fig2-env-boxplot, fig.width=14, fig.height=8}
+# Data for boxplots using iteration-level correlations
+boxplot_data <- list()
+for (name in names(oracle_correlations)) {
+  mat <- oracle_correlations[[name]]
+  meta <- parse_scenario(name)
+
+  df <- as.data.frame(mat)
+  df$iteration <- 1:nrow(df)
+  df_long <- tidyr::pivot_longer(df, cols = -iteration,
+                                  names_to = "metric", values_to = "correlation")
+  df_long$scenario <- name
+  df_long$response_type <- meta$response_type
+  df_long$distribution <- meta$distribution
+  df_long$n_env <- meta$n_env
+
+  boxplot_data[[name]] <- df_long
+}
+
+boxplot_df <- do.call(rbind, boxplot_data)
+
+# Grouped boxplot by n_env
+fig2_env_boxplot <- ggplot(boxplot_df, aes(x = metric, y = correlation, fill = n_env)) +
+  geom_boxplot(outlier.size = 1, outlier.alpha = 0.5, position = position_dodge(0.8)) +
+  scale_fill_manual(values = c("1 Env" = "#F8766D", "2 Env" = "#00BFC4"),
+                    name = "Environment") +
+  scale_x_discrete(expand = expansion(mult = 0.05, add = 0.8)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Metric Performance: One vs. Two Environmental Gradients",
+    subtitle = "Distribution of Correlations with known niche breadth across 30 iterations",
+    x = "Niche Breadth Metric",
+    y = "Correlation"
+  ) +
+  theme_publication() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    legend.position = "top",
+    plot.margin = margin(t = 10, r = 20, b = 10, l = 20, unit = "pt")
+  ) +
+  coord_cartesian(ylim = c(-1, 1), clip = "off")
+
+print(fig2_env_boxplot)
+
+ggsave(file.path(figures_dir, "fig2_env_comparison_boxplot.png"),
+       fig2_env_boxplot, width = 14, height = 8, dpi = 300)
+ggsave(file.path(figures_dir, "fig2_env_comparison_boxplot.pdf"),
+       fig2_env_boxplot, width = 14, height = 8)
+```
+
+## Figure 3: Boxplots by Response Type
+
+```{r fig3-response-boxplot, fig.width=14, fig.height=8}
+# Grouped boxplot by response type
+fig3_response_boxplot <- ggplot(boxplot_df, aes(x = metric, y = correlation, fill = response_type)) +
+  geom_boxplot(outlier.size = 1, outlier.alpha = 0.5, position = position_dodge(0.8)) +
+  scale_fill_manual(values = c("Symmetric" = "#00BFC4", "Asymmetric" = "#F8766D"),
+                    name = "Response Type") +
+  scale_x_discrete(expand = expansion(mult = 0.05, add = 0.8)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Metric Performance: Symmetric vs. Asymmetric Response Curves",
+    subtitle = "Distribution of Correlations with known Niche breadth across 30 iterations",
+    x = "Niche Breadth Metric",
+    y = "Correlation"
+  ) +
+  theme_publication() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    legend.position = "top",
+    plot.margin = margin(t = 10, r = 20, b = 10, l = 20, unit = "pt")
+  ) +
+  coord_cartesian(ylim = c(-1, 1), clip = "off")
+
+print(fig3_response_boxplot)
+
+ggsave(file.path(figures_dir, "fig3_response_type_boxplot.png"),
+       fig3_response_boxplot, width = 14, height = 8, dpi = 300)
+ggsave(file.path(figures_dir, "fig3_response_type_boxplot.pdf"),
+       fig3_response_boxplot, width = 14, height = 8)
+```
+
+## Figure 4: Boxplots by Breadth Distribution
+
+```{r fig4-distribution-boxplot, fig.width=14, fig.height=8}
+# Create grouped boxplot by breadth distribution
+fig4_dist_boxplot <- ggplot(boxplot_df, aes(x = metric, y = correlation, fill = distribution)) +
+  geom_boxplot(outlier.size = 1, outlier.alpha = 0.5, position = position_dodge(0.8)) +
+  scale_fill_manual(values = c("Uniform" = "#0072B2", "Normal" = "#E69F00", "Gamma" = "#009E73"),
+                    name = "Breadth Distribution") +
+  scale_x_discrete(expand = expansion(mult = 0.05, add = 0.8)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Metric Performance Across Niche Breadth Distributions",
+    subtitle = "Distribution of Correlations with known niche breadth across 30 iterations",
+    x = "Niche Breadth Metric",
+    y = "Correlation"
+  ) +
+  theme_publication() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    legend.position = "top",
+    plot.margin = margin(t = 10, r = 20, b = 10, l = 20, unit = "pt")
+  ) +
+  coord_cartesian(ylim = c(-1, 1), clip = "off")
+
+print(fig4_dist_boxplot)
+
+ggsave(file.path(figures_dir, "fig4_distribution_boxplot.png"),
+       fig4_dist_boxplot, width = 14, height = 8, dpi = 300)
+ggsave(file.path(figures_dir, "fig4_distribution_boxplot.pdf"),
+       fig4_dist_boxplot, width = 14, height = 8)
+```
+
+## Figure 5: Faceted Boxplots (1-Env vs 2-Env by Distribution)
+
+```{r fig5-faceted-boxplot, fig.width=16, fig.height=10}
+# Faceted boxplot
+fig5_faceted <- ggplot(boxplot_df, aes(x = metric, y = correlation, fill = response_type)) +
+  geom_boxplot(outlier.size = 0.8, outlier.alpha = 0.4, position = position_dodge(0.8)) +
+  scale_fill_manual(values = c("Symmetric" = "#377EB8", "Asymmetric" = "#E41A1C"),
+                    name = "Response Type") +
+  scale_x_discrete(expand = expansion(mult = 0.05, add = 0.8)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_grid(n_env ~ distribution, scales = "free_y") +
+  labs(
+    title = "Metric Performance Across All Simulation Conditions",
+    subtitle = "Correlations with known niche breadth (30 iterations per scenario)",
+    x = "Niche Breadth Metric",
+    y = "Correlation"
+  ) +
+  theme_publication() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    strip.background = element_rect(fill = "gray90", color = NA),
+    legend.position = "top",
+    plot.margin = margin(t = 10, r = 20, b = 10, l = 20, unit = "pt")
+  ) +
+  coord_cartesian(ylim = c(-1, 1), clip = "off")
+
+print(fig5_faceted)
+
+ggsave(file.path(figures_dir, "fig5_faceted_all_conditions.png"),
+       fig5_faceted, width = 16, height = 10, dpi = 300)
+ggsave(file.path(figures_dir, "fig5_faceted_all_conditions.pdf"),
+       fig5_faceted, width = 16, height = 10)
+```
+
+## Supplementary Figure S1: Mean Correlation Bar Chart
+
+```{r figS1-mean-barplot, fig.width=10, fig.height=6}
+# Calculate overall mean correlation per metric
+overall_mean <- boxplot_df %>%
+  group_by(metric) %>%
+  summarise(
+    mean_corr = mean(correlation, na.rm = TRUE),
+    se_corr = sd(correlation, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_corr))
+
+# Reorder factor levels
+overall_mean$metric <- factor(overall_mean$metric, levels = overall_mean$metric)
+
+figS1_barplot <- ggplot(overall_mean, aes(x = metric, y = mean_corr)) +
+  geom_bar(stat = "identity", fill = "steelblue", width = 0.7) +
+  geom_errorbar(aes(ymin = mean_corr - se_corr, ymax = mean_corr + se_corr),
+                width = 0.2, color = "black") +
+  scale_x_discrete(expand = expansion(mult = 0.05, add = 0.8)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Overall Metric Performance (All Scenarios Combined)",
+    subtitle = "Mean Correlation with known niche breadth ± SE",
+    x = "Niche Breadth Metric",
+    y = "Mean Correlation"
+  ) +
+  theme_publication() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    plot.margin = margin(t = 10, r = 20, b = 10, l = 20, unit = "pt")
+  ) +
+  coord_cartesian(ylim = c(-1, 1), clip = "off")
+
+print(figS1_barplot)
+
+ggsave(file.path(figures_dir, "figS1_overall_mean_correlation.png"),
+       figS1_barplot, width = 10, height = 6, dpi = 300)
+ggsave(file.path(figures_dir, "figS1_overall_mean_correlation.pdf"),
+       figS1_barplot, width = 10, height = 6)
+```
+
+## Supplementary Figure S2: Mean Correlation by Environment
+
+```{r figS2-env-barplot, fig.width=12, fig.height=6}
+# Mean correlation by n_env
+env_mean <- boxplot_df %>%
+  group_by(metric, n_env) %>%
+  summarise(
+    mean_corr = mean(correlation, na.rm = TRUE),
+    se_corr = sd(correlation, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+figS2_env_bar <- ggplot(env_mean, aes(x = metric, y = mean_corr, fill = n_env)) +
+  geom_bar(stat = "identity", position = position_dodge(0.8), width = 0.7) +
+  geom_errorbar(aes(ymin = mean_corr - se_corr, ymax = mean_corr + se_corr),
+                position = position_dodge(0.8), width = 0.2, color = "black") +
+  scale_fill_manual(values = c("1 Env" = "#F8766D", "2 Env" = "#00BFC4"),
+                    name = "Environment") +
+  scale_x_discrete(expand = expansion(mult = 0.05, add = 0.8)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Metric Performance by Environmental Complexity",
+    subtitle = "Mean Correlation with known niche breadth ± SE",
+    x = "Niche Breadth Metric",
+    y = "Mean Spearman Correlation"
+  ) +
+  theme_publication() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    legend.position = "top",
+    plot.margin = margin(t = 10, r = 20, b = 10, l = 20, unit = "pt")
+  ) +
+  coord_cartesian(ylim = c(-1, 1), clip = "off")
+
+print(figS2_env_bar)
+
+ggsave(file.path(figures_dir, "figS2_mean_by_environment.png"),
+       figS2_env_bar, width = 12, height = 6, dpi = 300)
+ggsave(file.path(figures_dir, "figS2_mean_by_environment.pdf"),
+       figS2_env_bar, width = 12, height = 6)
+```
+
+## Empirical Data Figures
+
+```{r empirical-figures, eval=exists("result_df_empirical"), fig.width=10, fig.height=8}
+# Empirical correlation heatmap with hierarchical clustering
+emp_metrics <- setdiff(colnames(result_df_empirical), "sci.name")
+emp_cor_mat <- cor(result_df_empirical[, emp_metrics], method = "spearman",
+                   use = "pairwise.complete.obs")
+
+# Create distance matrix and cluster
+dist_mat <- as.dist(1 - emp_cor_mat)
+hc <- hclust(dist_mat, method = "average")
+order_idx <- hc$order
+
+# Reorder correlation matrix
+emp_cor_ordered <- emp_cor_mat[order_idx, order_idx]
+
+# Long format
+emp_cor_long <- as.data.frame(as.table(emp_cor_ordered))
+colnames(emp_cor_long) <- c("Metric1", "Metric2", "Correlation")
+
+fig_emp_heatmap <- ggplot(emp_cor_long, aes(x = Metric1, y = Metric2, fill = Correlation)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  scale_fill_gradient2(
+    low = "#2166AC", mid = "white", high = "#B2182B",
+    midpoint = 0, limits = c(-1, 1),
+    name = "Spearman\nCorrelation"
+  ) +
+  geom_text(aes(label = sprintf("%.2f", Correlation)), size = 3.5) +
+  labs(
+    title = "Inter-Metric Correlations (Empirical Data)",
+    subtitle = "Hierarchically clustered Correlations among 9 niche breadth metrics",
+    x = "", y = ""
+  ) +
+  theme_publication() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    axis.text.y = element_text(size = 11)
+  ) +
+  coord_fixed()
+
+print(fig_emp_heatmap)
+
+ggsave(file.path(figures_dir, "fig_empirical_correlation_heatmap.png"),
+       fig_emp_heatmap, width = 10, height = 8, dpi = 300)
+ggsave(file.path(figures_dir, "fig_empirical_correlation_heatmap.pdf"),
+       fig_emp_heatmap, width = 10, height = 8)
+```
+
+## Empirical Dendrogram
+
+```{r empirical-dendrogram, eval=exists("result_df_empirical"), fig.width=8, fig.height=6}
+# Save dendrogram
+png(file.path(figures_dir, "fig_empirical_dendrogram.png"),
+    width = 8, height = 6, units = "in", res = 300)
+plot(hc, main = "Metric Clustering (Empirical Data)",
+     sub = "Average linkage clustering based on 1 - Correlation",
+     xlab = "", ylab = "Distance (1 - r)")
+dev.off()
+
+pdf(file.path(figures_dir, "fig_empirical_dendrogram.pdf"),
+    width = 8, height = 6)
+plot(hc, main = "Metric Clustering (Empirical Data)",
+     sub = "Average linkage clustering based on 1 - Correlation",
+     xlab = "", ylab = "Distance (1 - r)")
+dev.off()
+
+# Display
+plot(hc, main = "Metric Clustering (Empirical Data)",
+     sub = "Average linkage clustering based on 1 - Spearman correlation",
+     xlab = "", ylab = "Distance (1 - r)")
+```
+
+## Summary of Generated Figures
+
+```{r figure-summary}
+# Generated figures
+figure_files <- list.files(figures_dir, pattern = "\\.(png|pdf)$")
+cat("Generated", length(figure_files), "figures in", figures_dir, ":\n\n")
+for (f in sort(figure_files)) {
+  cat("  -", f, "\n")
+}
+```
+
+# Save Results
+
+```{r save-results}
+# Aggregated matrices as JSON
+matrices_json <- lapply(matrices_list, function(df) as.list(df))
+jsonlite::write_json(matrices_json, "results/matrices_list.json", pretty = TRUE)
+
+# Correlation summary
+if (exists("mean_corr_df")) {
+  write.csv(mean_corr_df, "results/oracle_correlations_summary.csv", row.names = FALSE)
+}
+
+cat("Analysis complete! Results saved to results/")
+```
+

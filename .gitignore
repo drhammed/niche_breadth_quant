@@ -1,0 +1,13 @@
+# Results - figures
+results/figures/
+data/bioclim
+data/bioclim_fut
+
+
+# R session files
+.Rhistory
+.RData
+.Rproj.user/
+
+# Mac system files
+.DS_Store
