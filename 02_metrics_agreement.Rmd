@@ -35,7 +35,7 @@ if (!require("pacman")) install.packages("pacman")
 pacman::p_load(
   tidyverse, ggplot2, corrplot, pheatmap, ComplexHeatmap,
   FactoMineR, MatrixCorrelation, ggcorrplot, viridis,
-  jsonlite, knitr, ggpubr
+  jsonlite, knitr, ggpubr, ggplotify
 )
 
 # configuration
@@ -194,13 +194,31 @@ mean_scaled <- as.data.frame(scale(mean_df))
 ## Heatmap of Scaled Mean Values
 
 ```{r mean-heatmap, fig.width=10, fig.height=8}
-pheatmap(mean_scaled,
-         cluster_rows = TRUE,
-         cluster_cols = TRUE,
-         display_numbers = TRUE,
-         number_format = "%.2f",
-         main = "Scaled Mean Metric Values Across Scenarios",
-         fontsize = 10)
+
+fig_ht <- Heatmap(as.matrix(mean_scaled), 
+        name = "Scaled\nValue",  # This controls the legend title 
+        cluster_rows = TRUE,  
+        cluster_columns = TRUE, 
+        cell_fun = function(j, i, x, y, width, height, fill) { 
+          grid.text(sprintf("%.2f", as.matrix(mean_scaled)[i, j]), x, y, 
+                    gp = gpar(fontsize = 10)) }, 
+        column_title = "Scaled Mean Metric Values Across Scenarios")
+
+# Save as PNG
+png(file.path("results/figures", "fig_scaled_mean_heatmap.png"),
+    width = 10, height = 8, units = "in", res = 300) 
+draw(fig_ht)
+dev.off()
+
+# Save as PDF 
+pdf(file.path("results/figures", "fig_scaled_mean_heatmap.pdf"), 
+    width = 10, height = 8)
+draw(fig_ht)
+dev.off()
+
+# Display
+draw(fig_ht)
+
 ```
 
 ## PCA on Mean Values
