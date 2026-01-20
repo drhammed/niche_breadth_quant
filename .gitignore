@@ -2,7 +2,7 @@
 results/figures/
 data/bioclim
 data/bioclim_fut
-
+figures/
 
 # R session files
 .Rhistory
