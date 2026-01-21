@@ -13,3 +13,5 @@ figures/
 .DS_Store
 
 *.Rproj
+
+*.tex

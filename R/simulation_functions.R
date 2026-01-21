@@ -109,40 +109,55 @@ generate_abundances_asymmetric <- function(x, optima, peak, left_breadth,
 #'
 #' @param n Total number of values to generate
 #' @param distribution One of "uniform", "normal", or "gamma"
-#' @param n_env Number of environmental variables (1 or 2) - affects parameters
+#' @param n_env Number of environmental variables (1 or 2)
+#' @param response_type Either "symmetric" or "asymmetric"
 #' @param params List of distribution parameters (optional, overrides defaults)
 #' @return Vector of breadth values
-generate_breadth_params <- function(n, distribution = "uniform", n_env = 1, params = NULL) {
+generate_breadth_params <- function(n, distribution = "uniform", n_env = 1,
+                                     response_type = "symmetric", params = NULL) {
 
+  # Parameters for each scenario
 
-  # Scenario-specific defaults:
-  # - Normal mean: 0.02 for single-env, 0.01 for two-env
-  # - Gamma floor: 0.08 for single-env, 0.05 for two-env
-  normal_mean <- if (n_env == 1) BREADTH_NORMAL_MEAN_1ENV else BREADTH_NORMAL_MEAN_2ENV
-  gamma_floor <- if (n_env == 1) BREADTH_GAMMA_FLOOR_1ENV else BREADTH_GAMMA_FLOOR_2ENV
+  if (distribution == "uniform") {
+    # Uniform: same for all scenarios [0.1, 1.2]
+    breadth <- runif(n, min = BREADTH_UNIFORM_MIN, max = BREADTH_UNIFORM_MAX)
 
-  defaults <- list(
-    uniform = list(min = BREADTH_UNIFORM_MIN, max = BREADTH_UNIFORM_MAX),
-    normal = list(mean = normal_mean, sd = BREADTH_NORMAL_SD, floor = BREADTH_NORMAL_FLOOR),
-    gamma = list(shape = BREADTH_GAMMA_SHAPE, rate = BREADTH_GAMMA_RATE, floor = gamma_floor)
-  )
+  } else if (distribution == "normal") {
+    # Normal distribution - parameters vary by scenario
+    if (response_type == "symmetric" && n_env == 1) {
+      # Symmetric 1-env: mean=0.02, sd=0.8, floor=0.08
+      b <- rnorm(n, mean = BREADTH_NORMAL_MEAN_SYM_1ENV, sd = BREADTH_NORMAL_SD)
+      breadth <- pmax(b, BREADTH_NORMAL_FLOOR_SYM_1ENV)
+    } else if (response_type == "symmetric" && n_env == 2) {
+      # Symmetric 2-env: mean=0.01, sd=0.8, NO floor
+      breadth <- rnorm(n, mean = BREADTH_NORMAL_MEAN_2ENV, sd = BREADTH_NORMAL_SD)
+    } else if (response_type == "asymmetric") {
+      # Asymmetric (1-env and 2-env): mean=0.01, sd=0.8, NO floor
+      breadth <- rnorm(n, mean = BREADTH_NORMAL_MEAN_ASY_1ENV, sd = BREADTH_NORMAL_SD)
+    }
 
-  if (is.null(params)) {
-    params <- defaults[[distribution]]
-  }
+  } else if (distribution == "gamma") {
+    # Gamma distribution - parameters vary by scenario
+    b <- rgamma(n, shape = BREADTH_GAMMA_SHAPE, rate = BREADTH_GAMMA_RATE)
 
-  breadth <- switch(distribution,
-    "uniform" = runif(n, min = params$min, max = params$max),
-    "normal" = {
-      b <- rnorm(n, mean = params$mean, sd = params$sd)
-      pmax(b, params$floor)  # Ensure positive values
-    },
-    "gamma" = {
-      b <- rgamma(n, shape = params$shape, rate = params$rate)
-      pmax(b, params$floor)  # Apply floor threshold
-    },
+    if (response_type == "symmetric" && n_env == 1) {
+      # Symmetric 1-env: pmax floor=0.08
+      breadth <- pmax(b, BREADTH_GAMMA_FLOOR_SYM_1ENV)
+    } else if (response_type == "symmetric" && n_env == 2) {
+      # Symmetric 2-env: pmax floor=0.05
+      breadth <- pmax(b, BREADTH_GAMMA_FLOOR_SYM_2ENV)
+    } else if (response_type == "asymmetric" && n_env == 1) {
+      # Asymmetric 1-env: use set_max_min transformation [0.05, 5]
+      breadth <- set_max_min(b, new_max = BREADTH_GAMMA_ASY_1ENV_MAX,
+                             new_min = BREADTH_GAMMA_ASY_1ENV_MIN)
+    } else if (response_type == "asymmetric" && n_env == 2) {
+      # Asymmetric 2-env: pmax floor=0.05
+      breadth <- pmax(b, BREADTH_GAMMA_FLOOR_ASY_2ENV)
+    }
+
+  } else {
     stop("Unknown distribution: ", distribution)
-  )
+  }
 
   return(breadth)
 }
@@ -187,7 +202,8 @@ generate_community <- function(n_species, n_sites, n_env,
       # Symmetric Gaussian parameters
       h <- matrix(runif(n_env * n_species, min = 0.3, max = 1), n_env, n_species)
       breadth <- matrix(
-        generate_breadth_params(n_env * n_species, breadth_distribution, n_env, breadth_params),
+        generate_breadth_params(n_env * n_species, breadth_distribution, n_env,
+                                response_type = "symmetric", params = breadth_params),
         n_env, n_species
       )
 
@@ -206,11 +222,13 @@ generate_community <- function(n_species, n_sites, n_env,
       strength.x <- matrix(1, n_env, n_species)  # Fixed at 1
 
       left_breadth <- matrix(
-        generate_breadth_params(n_env * n_species, breadth_distribution, n_env, breadth_params),
+        generate_breadth_params(n_env * n_species, breadth_distribution, n_env,
+                                response_type = "asymmetric", params = breadth_params),
         n_env, n_species
       )
       right_breadth <- matrix(
-        generate_breadth_params(n_env * n_species, breadth_distribution, n_env, breadth_params),
+        generate_breadth_params(n_env * n_species, breadth_distribution, n_env,
+                                response_type = "asymmetric", params = breadth_params),
         n_env, n_species
       )
 

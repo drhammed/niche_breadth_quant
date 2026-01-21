@@ -53,21 +53,26 @@ BREADTH_UNIFORM_MIN <- 0.1
 BREADTH_UNIFORM_MAX <- 1.2
 
 # Normal distribution parameters
-BREADTH_NORMAL_MEAN_1ENV <- 0.02
+BREADTH_NORMAL_MEAN_SYM_1ENV <- 0.02
+BREADTH_NORMAL_MEAN_ASY_1ENV <- 0.01
 BREADTH_NORMAL_MEAN_2ENV <- 0.01
 BREADTH_NORMAL_SD <- 0.8
 
+# Normal floor values
+BREADTH_NORMAL_FLOOR_SYM_1ENV <- 0.08
+
 # Gamma distribution parameters
-BREADTH_GAMMA_SHAPE <- 2
-BREADTH_GAMMA_RATE  <- 2
+BREADTH_GAMMA_SHAPE <- 0.2
+BREADTH_GAMMA_RATE  <- 0.5
 
 # Gamma floor values (pmax threshold)
+BREADTH_GAMMA_FLOOR_SYM_1ENV <- 0.08  # Symmetric 1-env
+BREADTH_GAMMA_FLOOR_SYM_2ENV <- 0.05  # Symmetric 2-env
+BREADTH_GAMMA_FLOOR_ASY_2ENV <- 0.05  # Asymmetric 2-env
 
-BREADTH_GAMMA_FLOOR_1ENV <- 0.08
-BREADTH_GAMMA_FLOOR_2ENV <- 0.05
-
-
-BREADTH_NORMAL_FLOOR <- 0.08
+BREADTH_GAMMA_ASY_1ENV_USE_SET_MAX_MIN <- TRUE
+BREADTH_GAMMA_ASY_1ENV_MAX <- 5
+BREADTH_GAMMA_ASY_1ENV_MIN <- 0.05
 
 # ------------------------------------------------------------------------------
 # Scenario Selection
