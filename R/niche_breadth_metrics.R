@@ -217,16 +217,18 @@ omi_params_fun <- function(env_vars, PA, nf = 2, niche.breadth = NULL) {
 #'
 #' @param data Presence-absence matrix (sites x species)
 #' @param env_vars Environmental variables (sites x n_env)
-#' @param nsamples Number of posterior samples (default: 1000)
+#' @param nsamples Number of posterior samples
 #' @param niche.breadth Optional oracle niche breadth for comparison
+#' @param empirical Logical; if TRUE, uses empirical data settings
 #' @return Data frame with sci.name and nr_hypervolume
-nr_hypervolume_fun <- function(data, env_vars, nsamples = 1000,
-                                niche.breadth = NULL) {
+nr_hypervolume_fun <- function(data, env_vars, nsamples = 10,
+                                niche.breadth = NULL, empirical = FALSE) {
 
   # Melt data to long format
   df_melted <- cbind(as.data.frame(data), as.data.frame(env_vars))
   species_cols <- colnames(data)
   env_cols <- colnames(env_vars)
+  n_env <- length(env_cols)
 
   df_melted <- tidyr::gather(df_melted, key = "species", value = "PA",
                               tidyr::all_of(species_cols))
@@ -234,28 +236,51 @@ nr_hypervolume_fun <- function(data, env_vars, nsamples = 1000,
   df_melted <- df_melted[df_melted$PA != 0, ]
   df_melted <- df_melted[, !(colnames(df_melted) %in% "PA")]
 
-  # Custom niw.post function with regularization
-  set.seed(999)
-  niw.post.custom <- function(nsamples, X, Psi) {
-    par <- nicheROVER::niw.coeffs(X, lambda = rnorm(ncol(as.matrix(X))),
-                                  kappa = 20, Psi = Psi, nu = 5)
-    # Add regularization for numerical stability
-    par$Psi <- par$Psi + diag(ncol(par$Psi)) * 1e-2
-    nicheROVER::rniw(nsamples, par$lambda, par$kappa, par$Psi, par$nu)
+  # For empirical data: scale environmental variables
+  if (empirical) {
+    df_melted[env_cols] <- scale(df_melted[env_cols])
   }
 
-  # Define dimensionality and initialize
-  d <- length(env_cols)
+  # Define dimensionality and initialize psi
+  set.seed(999)
+  d <- n_env
   psi <- crossprod(matrix(rnorm(d^2), d, d))
 
-  # Calculate niche parameters for each species
-  sim.par <- tapply(1:nrow(df_melted), df_melted$species, function(ii) {
-    X <- df_melted[ii, env_cols, drop = FALSE]
-    if (ncol(X) == 1) {
-      X <- as.matrix(X)
+  # Generate posterior parameters based on data type
+  if (empirical) {
+    # Empirical data: Custom niw.post with specific params
+    custom_niw_post_empirical <- function(nsamples, X, Psi) {
+      par <- nicheROVER::niw.coeffs(X, lambda = rnorm(ncol(X)), kappa = 20,
+                                     Psi = Psi, nu = 5)
+      # Add regularization
+      par$Psi <- par$Psi + diag(ncol(par$Psi)) * 1e-2
+      nicheROVER::rniw(nsamples, par$lambda, par$kappa, par$Psi, par$nu)
     }
-    niw.post.custom(nsamples = nsamples, X = X, Psi = psi)
-  })
+
+    sim.par <- tapply(1:nrow(df_melted), df_melted$species, function(ii) {
+      X <- df_melted[ii, env_cols, drop = FALSE]
+      custom_niw_post_empirical(nsamples = nsamples, X = X, Psi = psi)
+    })
+  } else if (n_env == 1) {
+    # Simulation single environment: Custom niw.post with regularization
+    custom_niw_post <- function(nsamples, X, Psi) {
+      par <- nicheROVER::niw.coeffs(X)
+      # Add regularization to avoid singularity issues
+      par$Psi <- par$Psi + diag(ncol(par$Psi)) * 1e-2
+      nicheROVER::rniw(nsamples, par$lambda, par$kappa, par$Psi, par$nu)
+    }
+
+    sim.par <- tapply(1:nrow(df_melted), df_melted$species, function(ii) {
+      X <- df_melted[ii, env_cols, drop = FALSE]
+      custom_niw_post(nsamples = nsamples, X = X, Psi = psi)
+    })
+  } else {
+    # Simulation two or more environments: Default nicheROVER::niw.post
+    sim.par <- tapply(1:nrow(df_melted), df_melted$species, function(ii) {
+      X <- df_melted[ii, env_cols, drop = FALSE]
+      nicheROVER::niw.post(nsamples = nsamples, X = X)
+    })
+  }
 
   # Calculate posterior niche sizes
   sim.size <- sapply(sim.par, function(spec) {
@@ -292,12 +317,17 @@ nr_hypervolume_fun <- function(data, env_vars, nsamples = 1000,
 #' Calculate Blonder Hypervolume
 #'
 #' Uses hypervolume package to estimate Gaussian kernel density hypervolumes.
+#' Implementation varies by data type:
+#' - Simulation: samples.per.point = 10, default bandwidth
+#' - Empirical: Scaled data, Silverman bandwidth, dynamic samples.per.point
 #'
 #' @param data Presence-absence matrix (sites x species)
 #' @param env_vars Environmental variables (sites x n_env)
 #' @param niche.breadth Optional oracle niche breadth for comparison
+#' @param empirical Logical; if TRUE, uses empirical data settings
 #' @return Data frame with sci.name and hypervolume
-hypervolume_blond_fun <- function(data, env_vars, niche.breadth = NULL) {
+hypervolume_blond_fun <- function(data, env_vars, niche.breadth = NULL,
+                                   empirical = FALSE) {
 
   # Melt data
   df_melted <- cbind(as.data.frame(data), as.data.frame(env_vars))
@@ -310,6 +340,11 @@ hypervolume_blond_fun <- function(data, env_vars, niche.breadth = NULL) {
   df_melted <- df_melted[df_melted$PA != 0, ]
   df_melted <- df_melted[, !(colnames(df_melted) %in% "PA")]
 
+  # For empirical data: scale environmental variables
+  if (empirical) {
+    df_melted[env_cols] <- scale(df_melted[env_cols])
+  }
+
   # Calculate hypervolume for each species
   species_values <- unique(df_melted$species)
   hv_results <- data.frame(
@@ -321,8 +356,24 @@ hypervolume_blond_fun <- function(data, env_vars, niche.breadth = NULL) {
   for (sp in species_values) {
     sim_data <- df_melted[df_melted$species == sp, env_cols, drop = FALSE]
     tryCatch({
-      hv <- hypervolume::hypervolume_gaussian(sim_data, name = sp,
-                                               samples.per.point = 10)
+      if (empirical) {
+        # Empirical mode: Silverman bandwidth, dynamic samples.per.point, weights
+        bandwidth <- hypervolume::estimate_bandwidth(sim_data, method = "silverman")
+        bandwidth[is.na(bandwidth) | bandwidth == 0] <- 0.01
+        samples_per_point <- ceiling((10^(3 + sqrt(ncol(sim_data)))) / nrow(sim_data))
+
+        hv <- hypervolume::hypervolume_gaussian(
+          sim_data,
+          name = sp,
+          weight = rep(1 / nrow(sim_data), nrow(sim_data)),
+          samples.per.point = samples_per_point,
+          kde.bandwidth = bandwidth
+        )
+      } else {
+        # Simulation mode: fixed samples.per.point = 10
+        hv <- hypervolume::hypervolume_gaussian(sim_data, name = sp,
+                                                 samples.per.point = 10)
+      }
       sp_hv <- hypervolume::get_volume(hv)
       hv_results <- rbind(hv_results,
                           data.frame(sci.name = sp, hypervolume = sp_hv))
@@ -523,13 +574,16 @@ estimate_nicheBreadth_avg.Dist <- function(distribution_data, env_variables = NU
 #' @param nr_params List of parameters for nicheROVER function
 #' @param nlv Number of latent variables for ecoCopula
 #' @param verbose Logical; print progress?
+#' @param empirical Logical; if TRUE, uses empirical data settings for hypervolume
+#'   functions (scaling, different bandwidth/niw params). Default FALSE for simulations.
 #' @return Data frame with all metrics per species
 calculate_all_metrics <- function(sim.com, env_vars, niche.breadth = NULL,
                                    co_occur_params = list(reps = 100,
                                                           psample = 4,
                                                           psample2 = 2),
-                                   nr_params = list(nsamples = 1000),
-                                   nlv = 5, verbose = TRUE) {
+                                   nr_params = list(nsamples = 10),
+                                   nlv = 5, verbose = TRUE,
+                                   empirical = FALSE) {
 
   n.species <- ncol(sim.com)
 
@@ -556,11 +610,13 @@ calculate_all_metrics <- function(sim.com, env_vars, niche.breadth = NULL,
   if (verbose) message("Calculating nicheROVER hypervolume...")
   nr_result <- nr_hypervolume_fun(sim.com, env_vars,
                                    nsamples = nr_params$nsamples,
-                                   niche.breadth = niche.breadth)
+                                   niche.breadth = niche.breadth,
+                                   empirical = empirical)
 
   if (verbose) message("Calculating Blondel hypervolume...")
   hv_result <- hypervolume_blond_fun(sim.com, env_vars,
-                                      niche.breadth = niche.breadth)
+                                      niche.breadth = niche.breadth,
+                                      empirical = empirical)
 
   if (verbose) message("Calculating GAM-based niche breadth...")
   gam_result <- estimate_nicheBreadth_Gam(sim.com, env_vars, verbose = verbose)

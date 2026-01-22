@@ -31,10 +31,9 @@ Generates community data under 12 different scenarios (combinations of response 
 ```{r load-packages}
 if (!require("pacman")) install.packages("pacman")
 pacman::p_load(
-  doParallel, foreach, data.table, ade4, tidyverse,
-  vegan, dplyr, reshape2, ggplot2, corrplot,
+  doParallel, foreach, data.table, ade4, tidyverse, vegan, dplyr, reshape2, ggplot2, corrplot,
   nicheROVER, hypervolume, mFD, ecoCopula, mgcv,terra, sf, sp, geodata, dismo
-)
+  )
 
 ```
 
@@ -114,10 +113,11 @@ run_iteration <- function(iteration, scenario) {
   omi_result <- omi_params_fun(env_vars, sim.com)
 
   # nicheROVER hypervolume
-  nr_result <- nr_hypervolume_fun(sim.com, env_vars, nsamples = NICHE_ROVER_NSAMPLES)
+  nr_result <- nr_hypervolume_fun(sim.com, env_vars, nsamples = NICHE_ROVER_NSAMPLES_SIM,
+                                   empirical = FALSE)
 
-  # Blondel hypervolume
-  hv_result <- hypervolume_blond_fun(sim.com, env_vars)
+  # Blondel hypervolume (simulation mode: samples.per.point=10, no scaling)
+  hv_result <- hypervolume_blond_fun(sim.com, env_vars, empirical = FALSE)
 
   # GAM-based niche breadth
   gam_result <- estimate_nicheBreadth_Gam(sim.com, env_vars, verbose = FALSE)
@@ -170,7 +170,7 @@ for (i in 1:nrow(SCENARIOS)) {
                 "estimate_nicheBreadth_Gam", "estimate_nicheBreadth_Latents",
                 "estimate_nicheBreadth_avg.Dist", "fit_gam", "eliminate_cols",
                 "N_SPECIES", "N_SITES", "CO_OCCUR_REPS", "CO_OCCUR_PSAMPLE",
-                "CO_OCCUR_PSAMPLE2", "NICHE_ROVER_NSAMPLES", "NLV")
+                "CO_OCCUR_PSAMPLE2", "NICHE_ROVER_NSAMPLES_SIM", "NLV")
   ) %dopar% {
 
     # Load packages within parallel worker
@@ -360,10 +360,11 @@ co_occ <- co_occur(sim.com, ncol(sim.com), reps = CO_OCCUR_REPS,
 omi_result <- omi_params_fun(env_vars, sim.com)
 
 # nicheROVER hypervolume
-nr_result <- nr_hypervolume_fun(sim.com, env_vars, nsamples = NICHE_ROVER_NSAMPLES)
+nr_result <- nr_hypervolume_fun(sim.com, env_vars, nsamples = NICHE_ROVER_NSAMPLES_EMP,
+                                 empirical = TRUE)
 
-# Blondel hypervolume
-hv_result <- hypervolume_blond_fun(sim.com, env_vars)
+# Blondel hypervolume (empirical mode: Silverman bandwidth, dynamic samples.per.point)
+hv_result <- hypervolume_blond_fun(sim.com, env_vars, empirical = TRUE)
 
 # GAM-based niche breadth
 gam_result <- estimate_nicheBreadth_Gam(sim.com, env_vars, verbose = FALSE)

@@ -35,8 +35,10 @@ CO_OCCUR_PSAMPLE2 <- 2   # Size of secondary subsample for Simpson index
 # Hypervolume Parameters
 # ------------------------------------------------------------------------------
 
-NICHE_ROVER_NSAMPLES <- 1000  # Number of samples for nicheROVER
-HV_SAMPLES_PER_POINT <- 10   # Samples per point for Blonder hypervolume
+# nicheROVER nsamples
+NICHE_ROVER_NSAMPLES_SIM <- 10     # For simulations
+NICHE_ROVER_NSAMPLES_EMP <- 1000   # For empirical data
+HV_SAMPLES_PER_POINT <- 10         # Samples per point for Blonder hypervolume
 
 # ------------------------------------------------------------------------------
 # Latent Variable Model Parameters
