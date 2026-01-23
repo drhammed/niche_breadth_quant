@@ -15,3 +15,12 @@ figures/
 *.Rproj
 
 *.tex
+
+comparison_asy_normal_1env.csv
+comparison_sym_normal_1env.csv
+
+compare_results.R
+comparison_summary.md
+
+detailed_comparison.R
+
