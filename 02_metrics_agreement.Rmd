@@ -448,12 +448,16 @@ ggcorrplot(agreement_matrix, lab = TRUE, lab_size = 3,
 # Summary
 
 ```{r summary}
-# Best performing metrics (highest mean correlation with oracle)
+# Best performing metrics (highest mean ABSOLUTE correlation with oracle)
 if (nrow(mean_corr_df) > 0) {
-  overall_mean_corr <- colMeans(mean_corr_df[, -ncol(mean_corr_df)], na.rm = TRUE)
-  best_metrics <- sort(overall_mean_corr, decreasing = TRUE)
+  # Mean of absolute correlations (strength regardless of direction)
+  overall_mean_abs_corr <- sapply(
+    colnames(mean_corr_df)[-ncol(mean_corr_df)],
+    function(m) mean(abs(mean_corr_df[[m]]), na.rm = TRUE)
+  )
+  best_metrics <- sort(overall_mean_abs_corr, decreasing = TRUE)
 
-  cat("Metrics ranked by mean correlation with oracle:\n")
+  cat("Metrics ranked by mean |ρ| with oracle (absolute correlation):\n")
   print(round(best_metrics, 3))
 }
 ```
