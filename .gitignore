@@ -31,3 +31,21 @@ validation_spearman_correlations.csv
 verify_manuscript_claims.R
 
 manuscript_verification_results.csv
+
+verify_dimensionality_sensitivity.R
+
+verify_subsection_claims.R
+
+dimensionality_sensitivity_summary.csv
+
+individual_metric_changes.csv
+
+sensitivity_by_distribution.csv
+
+sensitivity_by_response_type.csv
+
+class_sensitivity_by_response.csv
+
+verify_synthesis_claims.R
+
+empirical_z_scores.csv
