@@ -29,3 +29,5 @@ validate_spearman_correlations.R
 validation_spearman_correlations.csv
 
 verify_manuscript_claims.R
+
+manuscript_verification_results.csv
