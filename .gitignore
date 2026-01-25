@@ -27,3 +27,5 @@ detailed_comparison.R
 validate_spearman_correlations.R
 
 validation_spearman_correlations.csv
+
+verify_manuscript_claims.R
