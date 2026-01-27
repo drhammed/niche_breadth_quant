@@ -49,3 +49,5 @@ class_sensitivity_by_response.csv
 verify_synthesis_claims.R
 
 empirical_z_scores.csv
+
+verify_discussion_claims.R
