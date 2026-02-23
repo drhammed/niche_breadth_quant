@@ -13,6 +13,9 @@ rmarkdown::render("01_simulations.Rmd")
 
 # 3. Run metrics agreement analysis
 rmarkdown::render("02_metrics_agreement.Rmd")
+
+# 4. Run rank RMSE analysis (supplementary evaluation)
+source("03_rmse_analysis.R")
 ```
 
 ## Project Structure
@@ -30,6 +33,7 @@ Ch1-refactored/
 │
 ├── 01_simulations.Rmd            # Main simulation script
 ├── 02_metrics_agreement.Rmd      # Metrics comparison analysis
+├── 03_rmse_analysis.R            # Rank RMSE supplementary analysis
 │
 ├── data/                         # Input data
 │   ├── spp_mod.csv              # BBS species occurrence data
@@ -149,7 +153,9 @@ results/
 ├── empirical/
 │   └── result_df_empirical.rds
 ├── matrices_list.json
-└── oracle_correlations_summary.csv
+├── oracle_correlations_summary.csv
+├── rank_rmse_summary.csv
+└── spearman_vs_rmse_comparison.csv
 ```
 
 ## Authors
