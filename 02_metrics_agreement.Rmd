@@ -114,7 +114,7 @@ calculate_iteration_correlations <- function(df) {
     iter_df <- df[df$iteration == iter, ]
     corrs <- sapply(metric_cols, function(col) {
       cor(iter_df$niche_breadth, iter_df[[col]],
-          method = "spearman", use = "complete.obs")
+          method = "pearson", use = "complete.obs")
     })
     results[[as.character(iter)]] <- corrs
   }
@@ -336,13 +336,13 @@ corr_list <- lapply(names(matrices_list), function(name) {
     iterations <- unique(raw_df$iteration)
     iter_corrs <- lapply(iterations, function(iter) {
       iter_df <- raw_df[raw_df$iteration == iter, metrics, drop = FALSE]
-      cor(iter_df, method = "spearman", use = "pairwise.complete.obs")
+      cor(iter_df, method = "pearson", use = "pairwise.complete.obs")
     })
     Reduce("+", iter_corrs) / length(iter_corrs)
   } else {
     # Empirical: no iterations, correlate directly
     df <- matrices_list[[name]]
-    cor(df[, metrics], method = "spearman", use = "pairwise.complete.obs")
+    cor(df[, metrics], method = "pearson", use = "pairwise.complete.obs")
   }
 })
 names(corr_list) <- names(matrices_list)
@@ -383,7 +383,7 @@ ggplot(scores_corr, aes(x = Dim.1, y = Dim.2, label = Scenario)) +
 
 ```{r empirical-analysis, eval=exists("result_df_empirical")}
 # Pairwise metric correlations for empirical data
-emp_cor_mat <- cor(result_df_empirical[, -1], method = "spearman",
+emp_cor_mat <- cor(result_df_empirical[, -1], method = "pearson",
                    use = "pairwise.complete.obs")
 
 ggcorrplot(emp_cor_mat, lab = TRUE, lab_size = 3,
@@ -809,7 +809,7 @@ ggsave(file.path(figures_dir, "figS2_mean_by_environment.pdf"),
 ```{r empirical-figures, eval=exists("result_df_empirical"), fig.width=10, fig.height=8}
 # Empirical correlation heatmap with hierarchical clustering
 emp_metrics <- setdiff(colnames(result_df_empirical), "sci.name")
-emp_cor_mat <- cor(result_df_empirical[, emp_metrics], method = "spearman",
+emp_cor_mat <- cor(result_df_empirical[, emp_metrics], method = "pearson",
                    use = "pairwise.complete.obs")
 
 # Create distance matrix and cluster
