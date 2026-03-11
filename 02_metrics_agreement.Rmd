@@ -328,9 +328,24 @@ flatten_corr <- function(mat) {
 }
 
 # Calculate Spearman correlation matrix for each scenario
-corr_list <- lapply(matrices_list, function(df) {
-  cor(df[, metrics], method = "spearman", use = "pairwise.complete.obs")
+# For simulation scenarios: compute correlations per iteration, then average
+corr_list <- lapply(names(matrices_list), function(name) {
+  raw_df <- all_results[[name]]
+  if (!is.null(raw_df) && "iteration" %in% colnames(raw_df)) {
+    # Simulation: correlate within each iteration, then average
+    iterations <- unique(raw_df$iteration)
+    iter_corrs <- lapply(iterations, function(iter) {
+      iter_df <- raw_df[raw_df$iteration == iter, metrics, drop = FALSE]
+      cor(iter_df, method = "spearman", use = "pairwise.complete.obs")
+    })
+    Reduce("+", iter_corrs) / length(iter_corrs)
+  } else {
+    # Empirical: no iterations, correlate directly
+    df <- matrices_list[[name]]
+    cor(df[, metrics], method = "spearman", use = "pairwise.complete.obs")
+  }
 })
+names(corr_list) <- names(matrices_list)
 
 # Flatten correlation vectors
 corr_flat_list <- lapply(corr_list, flatten_corr)
