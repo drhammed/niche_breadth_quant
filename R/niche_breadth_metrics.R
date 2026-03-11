@@ -242,7 +242,7 @@ nr_hypervolume_fun <- function(data, env_vars, nsamples = 10,
   }
 
   # Define dimensionality and initialize psi
-  set.seed(999)
+  # set.seed(999)
   d <- n_env
   psi <- crossprod(matrix(rnorm(d^2), d, d))
 
