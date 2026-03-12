@@ -4,11 +4,11 @@
 #' =============================================================================
 #'
 #' Computes rank-based RMSE between oracle niche breadth and each metric
-#' across all 12 simulation scenarios. Complements the Spearman correlation
+#' across all 12 simulation scenarios. Complements the Pearson correlation
 #' analysis in 02_metrics_agreement.Rmd.
 #'
 #' Rank RMSE captures the magnitude of rank displacement: a metric could have
-#' moderate Spearman rho but low rank RMSE if errors are small and evenly
+#' moderate Pearson rho but low rank RMSE if errors are small and evenly
 #' distributed, or high rank RMSE if a few species are grossly misranked.
 #' =============================================================================
 
@@ -21,7 +21,8 @@ source("config.R")
 source("R/helper_functions.R")
 
 METRICS <- c("SimpSSI", "beta.a", "beta.w", "om_tol", "nr_hv",
-             "hv_blond", "nb_Gam", "nb_latent", "nb_dist")
+             "hv_blond", "nb_Gam", "nb_latent", "nb_dist",
+             "LPCD_mean", "LPCD_sd")
 
 # --- Load results ------------------------------------------------------------
 results_dir <- "results/simulations"
@@ -40,7 +41,7 @@ cat("Loaded", length(all_results), "scenario files\n")
 #' then compute RMSE between the two rank vectors.
 #'
 #' Metrics where higher values indicate narrower niches (inverse relationship)
-#' are handled by using absolute rank differences --- the Spearman rho sign
+#' are handled by using absolute rank differences --- the Pearson rho sign
 #' already captures direction; rank RMSE captures displacement magnitude.
 
 rank_rmse <- function(oracle, estimated) {
@@ -110,36 +111,36 @@ print(as.data.frame(overall_rmse), digits = 2)
 write.csv(rmse_summary, "results/rank_rmse_summary.csv", row.names = FALSE)
 cat("\nSaved: results/rank_rmse_summary.csv\n")
 
-# --- Comparison table: Spearman rho alongside rank RMSE ----------------------
-# Load existing Spearman correlations if available
-spearman_file <- "results/oracle_correlations_summary.csv"
-if (file.exists(spearman_file)) {
-  spearman_df <- read.csv(spearman_file)
+# --- Comparison table: Pearson rho alongside rank RMSE ----------------------
+# Load existing Pearson correlations if available
+pearson_file <- "results/oracle_correlations_summary.csv"
+if (file.exists(pearson_file)) {
+  pearson_df <- read.csv(pearson_file)
 
-  cat("\n=== Side-by-side: Mean |Spearman rho| vs Mean Rank RMSE ===\n\n")
+  cat("\n=== Side-by-side: Mean |Pearson rho| vs Mean Rank RMSE ===\n\n")
 
   # Reshape for comparison
   rmse_long <- rmse_summary %>%
     pivot_longer(cols = all_of(METRICS), names_to = "metric",
                  values_to = "rank_rmse")
 
-  spearman_long <- spearman_df %>%
+  pearson_long <- pearson_df %>%
     pivot_longer(cols = any_of(METRICS), names_to = "metric",
-                 values_to = "spearman_rho")
+                 values_to = "pearson_rho")
 
   # Overall means
   rmse_overall <- rmse_long %>%
     group_by(metric) %>%
     summarise(mean_rank_rmse = mean(rank_rmse, na.rm = TRUE), .groups = "drop")
 
-  spearman_overall <- spearman_long %>%
+  pearson_overall <- pearson_long %>%
     group_by(metric) %>%
-    summarise(mean_abs_rho = mean(abs(spearman_rho), na.rm = TRUE), .groups = "drop")
+    summarise(mean_abs_rho = mean(abs(pearson_rho), na.rm = TRUE), .groups = "drop")
 
-  comparison <- left_join(spearman_overall, rmse_overall, by = "metric") %>%
+  comparison <- left_join(pearson_overall, rmse_overall, by = "metric") %>%
     arrange(mean_rank_rmse)
 
   print(as.data.frame(comparison), digits = 3)
-  write.csv(comparison, "results/spearman_vs_rmse_comparison.csv", row.names = FALSE)
-  cat("\nSaved: results/spearman_vs_rmse_comparison.csv\n")
+  write.csv(comparison, "results/pearson_vs_rmse_comparison.csv", row.names = FALSE)
+  cat("\nSaved: results/pearson_vs_rmse_comparison.csv\n")
 }

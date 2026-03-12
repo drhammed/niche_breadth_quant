@@ -2,16 +2,18 @@
 #' Niche Breadth Metrics
 #' =============================================================================
 #'
-#' This file contains all 9 niche breadth estimation methods:
+#' This file contains all 11 niche breadth estimation methods:
 #'   1. SimpSSI (Multi-site Simpson)
 #'   2. Beta.a (Additive beta partitioning)
 #'   3. Beta.w (Whittaker's beta)
 #'   4. om_tol (OMI tolerance)
 #'   5. nr_hv (nicheROVER hypervolume)
 #'   6. hv_blond (Blonder hypervolume)
-#'   7. nb_Gam (GAM-based niche breadth)
-#'   8. nb_latent (Latent variable model)
-#'   9. nb_dist (Average Hellinger distance)
+#'   7. nb_Gam (GAM-based niche breadth, general version)
+#'   8. nb_latent (Latent variable model, covariance-based)
+#'   9. nb_dist (Weighted average environmental distance)
+#'  10. LPCD_mean (Alpha diversity contribution mean)
+#'  11. LPCD_sd (Alpha diversity contribution SD)
 #'
 #' Functions by Hammed Akande and Pedro Peres-Neto.
 #' =============================================================================
@@ -397,69 +399,275 @@ hypervolume_blond_fun <- function(data, env_vars, niche.breadth = NULL,
 
 
 # =============================================================================
-# 7. GAM-BASED NICHE BREADTH (nb_Gam)
+# 7. GAM-BASED NICHE BREADTH (nb_Gam) - General version
 # =============================================================================
 
-#' Fit GAM Model
+#' Weighted Covariance Matrix
 #'
-#' Fit a GAM with error handling.
+#' Computes weighted covariance matrix for calculating niche breadth.
+#'
+#' @param X Matrix of environmental variables
+#' @param w Vector of weights (e.g., predicted probabilities)
+#' @return Weighted covariance matrix
+weighted_cov <- function(X, w) {
+  X <- as.matrix(X)
+  w <- as.numeric(w)
+
+  ok <- complete.cases(X) & is.finite(w)
+  X <- X[ok, , drop = FALSE]
+  w <- w[ok]
+
+  if (nrow(X) == 0 || sum(w) <= 0) {
+    return(matrix(NA, ncol = ncol(X), nrow = ncol(X)))
+  }
+
+  w <- w / sum(w)
+  mu <- colSums(X * w)
+  X_centered <- sweep(X, 2, mu, "-")
+  cov_w <- t(X_centered) %*% (X_centered * w)
+
+  return(cov_w)
+}
+
+#' Summarize Weighted Covariance into Scalar Breadth
+#'
+#' @param cov_mat Weighted covariance matrix
+#' @param summary_method One of "mean_sd", "rms_sd", "trace", "determinant"
+#' @return Scalar niche breadth value
+summarize_breadth_from_cov <- function(cov_mat,
+                                       summary_method = c("mean_sd",
+                                                          "rms_sd",
+                                                          "trace",
+                                                          "determinant")) {
+  summary_method <- match.arg(summary_method)
+
+  if (any(is.na(cov_mat))) return(NA_real_)
+
+  eig <- try(eigen(cov_mat, symmetric = TRUE, only.values = TRUE)$values,
+             silent = TRUE)
+  if (inherits(eig, "try-error")) return(NA_real_)
+
+  eig[eig < 0 & abs(eig) < 1e-10] <- 0
+  if (any(eig < 0)) return(NA_real_)
+
+  sds <- sqrt(diag(cov_mat))
+
+  out <- switch(summary_method,
+                mean_sd     = mean(sds),
+                rms_sd      = sqrt(mean(diag(cov_mat))),
+                trace       = sum(diag(cov_mat)),
+                determinant = {
+                  det_val <- det(cov_mat)
+                  if (!is.finite(det_val) || det_val < 0) NA_real_ else det_val^(1 / (2 * ncol(cov_mat)))
+                }
+  )
+
+  return(out)
+}
+
+#' Build GAM Formula
+#'
+#' Constructs a GAM formula supporting independent, joint, or hybrid models.
+#'
+#' @param response_name Name of the response variable
+#' @param predictors Character vector of predictor names
+#' @param model_type One of "independent", "joint", "hybrid"
+#' @param joint_engine One of "te", "ti"
+#' @param pairwise_interactions Optional list of variable pairs for hybrid model
+#' @param k Optional basis dimension
+#' @return A formula object
+build_gam_formula <- function(response_name = "response",
+                              predictors,
+                              model_type = c("independent", "joint", "hybrid"),
+                              joint_engine = c("te", "ti"),
+                              pairwise_interactions = NULL,
+                              k = NULL) {
+  model_type <- match.arg(model_type)
+  joint_engine <- match.arg(joint_engine)
+
+  if (length(predictors) == 0) stop("No predictors supplied.")
+
+  smooth_1d <- function(v) {
+    if (is.null(k)) {
+      paste0("s(", v, ")")
+    } else {
+      paste0("s(", v, ", k = ", k, ")")
+    }
+  }
+
+  smooth_joint <- function(vars) {
+    engine <- joint_engine
+    vars_txt <- paste(vars, collapse = ", ")
+    if (is.null(k)) {
+      paste0(engine, "(", vars_txt, ")")
+    } else if (length(k) == 1) {
+      paste0(engine, "(", vars_txt, ", k = ", k, ")")
+    } else {
+      k_txt <- paste(k, collapse = ", ")
+      paste0(engine, "(", vars_txt, ", k = c(", k_txt, "))")
+    }
+  }
+
+  n_env <- length(predictors)
+
+  if (n_env == 1) {
+    rhs <- smooth_1d(predictors)
+  } else if (model_type == "independent") {
+    rhs <- paste(vapply(predictors, smooth_1d, character(1)), collapse = " + ")
+  } else if (model_type == "joint") {
+    rhs <- smooth_joint(predictors)
+  } else if (model_type == "hybrid") {
+    main_terms <- vapply(predictors, smooth_1d, character(1))
+
+    if (is.null(pairwise_interactions)) {
+      pairwise_interactions <- utils::combn(predictors, 2, simplify = FALSE)
+    } else {
+      pairwise_interactions <- lapply(pairwise_interactions, as.character)
+    }
+
+    pair_terms <- vapply(pairwise_interactions, smooth_joint, character(1))
+    rhs <- paste(c(main_terms, pair_terms), collapse = " + ")
+  }
+
+  stats::as.formula(paste(response_name, "~", rhs))
+}
+
+#' Fit GAM Model (General)
+#'
+#' Fit a GAM with error handling, supporting multiple model types.
 #'
 #' @param data.df Data frame with response and predictors
 #' @param predictors Predictor column names
-#' @return List with gam_model and warning message
-fit_gam <- function(data.df, predictors) {
-  formula_str <- paste("response ~",
-                       paste(paste("s(", predictors, ")", sep = ""),
-                             collapse = " + "))
-  formula_obj <- as.formula(formula_str)
+#' @param model_type One of "independent", "joint", "hybrid"
+#' @param joint_engine One of "te", "ti"
+#' @param pairwise_interactions Optional list of variable pairs
+#' @param family GLM family (default: binomial logit)
+#' @param method Fitting method (default: "REML")
+#' @param k Optional basis dimension
+#' @return List with gam_model, warning, and formula
+fit_gam_general <- function(data.df,
+                            predictors,
+                            model_type = c("independent", "joint", "hybrid"),
+                            joint_engine = c("te", "ti"),
+                            pairwise_interactions = NULL,
+                            family = stats::binomial(link = "logit"),
+                            method = "REML",
+                            k = NULL) {
+  model_type <- match.arg(model_type)
+  joint_engine <- match.arg(joint_engine)
+
+  formula_obj <- build_gam_formula(
+    response_name = "response",
+    predictors = predictors,
+    model_type = model_type,
+    joint_engine = joint_engine,
+    pairwise_interactions = pairwise_interactions,
+    k = k
+  )
 
   result <- NULL
   warningMessage <- NULL
 
   tryCatch({
     gam_model <- withCallingHandlers({
-      mgcv::gam(formula_obj, data = data.df, family = binomial(link = "logit"))
+      mgcv::gam(formula_obj, data = data.df, family = family, method = method)
     }, warning = function(w) {
       warningMessage <<- w$message
       invokeRestart("muffleWarning")
     })
 
-    if (inherits(gam_model, "gam") && any(gam_model$converged != 0)) {
-      warningMessage <- "Convergence Issues"
+    if (inherits(gam_model, "gam") && !isTRUE(gam_model$converged)) {
+      warningMessage <- "Convergence issues"
     }
 
-    result <- list(gam_model = gam_model, warning = warningMessage)
+    result <- list(
+      gam_model = gam_model,
+      warning = warningMessage,
+      formula = formula_obj
+    )
   }, error = function(e) {
-    result <- list(gam_model = NULL,
-                   warning = paste("Error:", conditionMessage(e)))
+    result <- list(
+      gam_model = NULL,
+      warning = paste("Error:", conditionMessage(e)),
+      formula = formula_obj
+    )
   })
 
   return(result)
 }
 
-
-#' Calculate GAM-based Niche Breadth
+#' Calculate GAM-based Niche Breadth (General)
 #'
 #' Uses Generalized Additive Models to estimate niche breadth based on
-#' average distance among predicted values.
+#' weighted covariance of environmental variables.
 #'
 #' @param distribution_data Presence-absence matrix (sites x species)
 #' @param env_variables Environmental variables (sites x n_env)
+#' @param summary_method One of "mean_sd", "rms_sd", "trace", "determinant"
+#' @param model_type One of "independent", "joint", "hybrid"
+#' @param joint_engine One of "te", "ti"
+#' @param pairwise_interactions Optional list of variable pairs
+#' @param family GLM family (default: binomial logit)
+#' @param method Fitting method (default: "REML")
+#' @param k Optional basis dimension
 #' @param verbose Logical; print progress?
-#' @return Data frame with Niche_Breadth and Gam_Warning per species
-estimate_nicheBreadth_Gam <- function(distribution_data, env_variables,
-                                       verbose = TRUE) {
-  Env_variables <- data.frame(env_variables)
-  colnames(Env_variables) <- paste0("Env", 1:NCOL(env_variables))
+#' @return Data frame with Niche_Breadth, Gam_Warning, and Formula per species
+estimate_nicheBreadth_Gam_general <- function(distribution_data,
+                                              env_variables,
+                                              summary_method = c("mean_sd",
+                                                                 "rms_sd",
+                                                                 "trace",
+                                                                 "determinant"),
+                                              model_type = c("independent",
+                                                             "joint",
+                                                             "hybrid"),
+                                              joint_engine = c("te", "ti"),
+                                              pairwise_interactions = NULL,
+                                              family = stats::binomial(link = "logit"),
+                                              method = "REML",
+                                              k = NULL,
+                                              verbose = TRUE) {
+  summary_method <- match.arg(summary_method)
+  model_type <- match.arg(model_type)
+  joint_engine <- match.arg(joint_engine)
+
+  Env_variables <- as.data.frame(env_variables)
+  colnames(Env_variables) <- paste0("Env", seq_len(ncol(Env_variables)))
+
+  distribution_data <- as.data.frame(distribution_data)
 
   n.species <- ncol(distribution_data)
   n.sites <- nrow(distribution_data)
-  gam_Warning <- character(n.species)
-  predicted_values <- matrix(0, n.sites, n.species)
 
-  for (i in 1:n.species) {
-    data.df <- data.frame(response = distribution_data[, i], Env_variables)
-    gam_result <- fit_gam(data.df, predictors = colnames(Env_variables))
+  if (nrow(Env_variables) != n.sites) {
+    stop("distribution_data and env_variables must have the same number of rows.")
+  }
+
+  gam_Warning <- character(n.species)
+  niche.breadth <- rep(NA_real_, n.species)
+  gam_formula <- character(n.species)
+  fitted_values <- matrix(NA_real_, nrow = n.sites, ncol = n.species)
+  colnames(fitted_values) <- colnames(distribution_data)
+
+  for (i in seq_len(n.species)) {
+    data.df <- data.frame(
+      response = distribution_data[[i]],
+      Env_variables,
+      check.names = FALSE
+    )
+
+    gam_result <- fit_gam_general(
+      data.df = data.df,
+      predictors = colnames(Env_variables),
+      model_type = model_type,
+      joint_engine = joint_engine,
+      pairwise_interactions = pairwise_interactions,
+      family = family,
+      method = method,
+      k = k
+    )
+
+    gam_formula[i] <- deparse(gam_result$formula)
 
     gam_Warning[i] <- if (!is.null(gam_result$warning)) {
       gam_result$warning
@@ -468,91 +676,248 @@ estimate_nicheBreadth_Gam <- function(distribution_data, env_variables,
     }
 
     if (!is.null(gam_result$gam_model)) {
-      if (verbose) {
-        print(c(i, summary(gam_result$gam_model)$r.sq))
+      pred <- try(stats::predict(gam_result$gam_model, type = "response"),
+                  silent = TRUE)
+
+      if (!inherits(pred, "try-error")) {
+        fitted_values[, i] <- pred
+        cov_w <- weighted_cov(Env_variables, pred)
+        niche.breadth[i] <- summarize_breadth_from_cov(
+          cov_mat = cov_w,
+          summary_method = summary_method
+        )
+
+        if (verbose) {
+          rsq <- try(summary(gam_result$gam_model)$r.sq, silent = TRUE)
+          if (!inherits(rsq, "try-error")) {
+            print(c(species = i, r_sq = rsq, breadth = niche.breadth[i]))
+          } else {
+            print(c(species = i, breadth = niche.breadth[i]))
+          }
+        }
       }
-      predicted_values[, i] <- predict(gam_result$gam_model, type = "response")
     }
   }
-
-  niche.breadth <- apply(as.matrix(dist(t(predicted_values))), 2, mean)
-  names(niche.breadth) <- colnames(distribution_data)
 
   results <- data.frame(
     Niche_Breadth = niche.breadth,
     Gam_Warning = gam_Warning,
-    stringsAsFactors = FALSE
+    Formula = gam_formula,
+    stringsAsFactors = FALSE,
+    row.names = colnames(distribution_data)
   )
+
+  attr(results, "fitted_values") <- fitted_values
 
   return(results)
 }
 
 
 # =============================================================================
-# 8. LATENT VARIABLE MODEL (nb_latent)
+# 8. LATENT VARIABLE MODEL (nb_latent) - Covariance-based
 # =============================================================================
 
 #' Calculate Latent Variable-based Niche Breadth
 #'
 #' Uses ecoCopula package to fit latent variable models and estimate niche
-#' breadth from predicted probabilities.
+#' breadth from the covariance of latent scores at occupied sites.
 #'
 #' @param distribution_data Presence-absence matrix (sites x species)
-#' @param env_variables Environmental variables (sites x n_env)
-#' @param nlv Number of latent variables (default: 5)
+#' @param nlv Number of latent variables (default: 3)
 #' @param verbose Logical; print progress?
 #' @return Named vector of niche breadths
-estimate_nicheBreadth_Latents <- function(distribution_data, env_variables,
-                                           nlv = 5, verbose = TRUE) {
+estimate_nicheBreadth_Latents <- function(distribution_data, nlv = 3, verbose = TRUE) {
   n.species <- ncol(distribution_data)
 
-  # Filter columns to avoid fitting issues
+  # Ensure species names exist
+  spp_names <- colnames(distribution_data)
+  if (is.null(spp_names)) {
+    spp_names <- paste0("sp", seq_len(n.species))
+    colnames(distribution_data) <- spp_names
+  }
+
+  # Filter columns to avoid fitting issues in ecoCopula
   distribution_data.smaller <- eliminate_cols(
     distribution_data,
     min(colSums(distribution_data)),
     max(colSums(distribution_data))
   )
 
-  # Fit stacked SDM
-  eco_PA <- ecoCopula::stackedsdm(distribution_data.smaller, ~ 1,
-                                   data = distribution_data, family = "binomial")
+  # Fit stacked SDM and extract latent variables
+  eco_PA <- ecoCopula::stackedsdm(
+    distribution_data.smaller,
+    ~ 1,
+    data = distribution_data,
+    family = "binomial"
+  )
+
   eco_lvs <- ecoCopula::cord(eco_PA, nlv = nlv)
-  eco_lvs <- matrix(eco_lvs$scores, nrow(distribution_data.smaller), nlv)
+  eco_lvs <- as.data.frame(matrix(eco_lvs$scores, nrow(distribution_data), nlv))
+  colnames(eco_lvs) <- paste0("LV", seq_len(nlv))
 
-  predicted_values <- matrix(0, nrow = nrow(distribution_data.smaller),
-                             ncol = n.species)
+  niche.breadth <- rep(NA_real_, n.species)
+  names(niche.breadth) <- spp_names
 
-  for (i in 1:n.species) {
-    logistic_model <- mgcv::gam(distribution_data[, i] ~ eco_lvs,
-                                family = binomial(link = "logit"))
-    if (verbose) {
-      print(c(i, summary(logistic_model)$r.sq))
+  for (i in seq_len(n.species)) {
+    spp_name <- spp_names[i]
+    spp_occ <- distribution_data[, i] > 0
+
+    LV_i <- eco_lvs[spp_occ, , drop = FALSE]
+
+    if (nrow(LV_i) < 2) {
+      niche.breadth[i] <- NA
+      if (verbose) message(spp_name, ": fewer than 2 occupied sites; returning NA")
+      next
     }
-    predicted_values[, i] <- predict(logistic_model, type = "response")
-  }
 
-  niche.breadth <- apply(as.matrix(dist(t(predicted_values))), 2, mean)
-  names(niche.breadth) <- colnames(distribution_data)
+    if (ncol(LV_i) == 1) {
+      niche.breadth[i] <- sqrt(stats::var(LV_i[, 1], na.rm = TRUE))
+    } else {
+      S <- stats::cov(LV_i, use = "complete.obs")
+      niche.breadth[i] <- sqrt(det(S + diag(1e-8, ncol(S))))
+    }
+
+    if (verbose) {
+      message(spp_name, ": breadth = ", round(niche.breadth[i], 5))
+    }
+  }
 
   return(niche.breadth)
 }
 
 
 # =============================================================================
-# 9. AVERAGE HELLINGER DISTANCE (nb_dist)
+# 9. WEIGHTED AVERAGE ENVIRONMENTAL DISTANCE (nb_dist)
 # =============================================================================
 
-#' Calculate Average Hellinger Distance Niche Breadth
+#' Calculate Weighted Average Environmental Distance Niche Breadth
 #'
-#' Simple metric based on average Hellinger distance among species.
+#' Computes niche breadth as the weighted average pairwise environmental
+#' distance among occupied sites, where weights are abundance products.
 #'
-#' @param distribution_data Presence-absence or abundance matrix
-#' @param env_variables Environmental variables (unused but kept for consistency)
+#' @param distribution_data Presence-absence or abundance matrix (sites x species)
+#' @param env_variables Environmental variables (sites x n_env)
 #' @return Named vector of niche breadths
-estimate_nicheBreadth_avg.Dist <- function(distribution_data, env_variables = NULL) {
-  spe.Hellinger <- vegan::decostand(distribution_data, method = "hellinger")
-  niche.breadth <- apply(as.matrix(dist(t(spe.Hellinger))), 2, mean)
-  names(niche.breadth) <- colnames(distribution_data)
+estimate_nicheBreadth_avgDist_weighted <- function(distribution_data, env_variables) {
+  if (is.null(env_variables)) {
+    stop("env_variables must be provided.")
+  }
+
+  distribution_data <- as.matrix(distribution_data)
+  env_variables <- as.matrix(env_variables)
+
+  if (nrow(distribution_data) != nrow(env_variables)) {
+    stop("distribution_data and env_variables must have the same number of rows.")
+  }
+
+  n_species <- ncol(distribution_data)
+  niche_breadth <- rep(NA_real_, n_species)
+  names(niche_breadth) <- colnames(distribution_data)
+
+  env_dist <- as.matrix(dist(env_variables))
+
+  for (i in seq_len(n_species)) {
+    w <- distribution_data[, i]
+    occ <- w > 0
+
+    if (sum(occ) < 2) {
+      niche_breadth[i] <- NA_real_
+      next
+    }
+
+    w_sub <- w[occ]
+    d_sub <- env_dist[occ, occ, drop = FALSE]
+
+    W <- outer(w_sub, w_sub)
+    niche_breadth[i] <- sum(d_sub[lower.tri(d_sub)] * W[lower.tri(W)]) / sum(W[lower.tri(W)])
+  }
+
+  niche_breadth
+}
+
+
+# =============================================================================
+# 10. ALPHA DIVERSITY CONTRIBUTION MEAN (LPCD_mean)
+# =============================================================================
+
+#' Calculate Alpha Diversity Contribution Mean Niche Breadth
+#'
+#' Estimates niche breadth based on species' mean contributions to local
+#' alpha diversity across sites. Based on occurrence data only.
+#'
+#' @param abund_mat Abundance matrix (sites x species)
+#' @param na.as.zero Logical; treat NAs as zeros? (default: TRUE)
+#' @return Named vector of niche breadths
+estimate_nicheBreadth_from_alphaMean <- function(abund_mat, na.as.zero = TRUE) {
+
+  n.sites <- nrow(abund_mat)
+  n.species <- ncol(abund_mat)
+
+  Sum.sites <- rowSums(abund_mat)
+  total_sum <- sum(abund_mat)
+
+  LPCD.alpha <- matrix(0, n.sites, n.species)
+
+  for (i in 1:n.sites) {
+    for (j in 1:n.species) {
+      n_ij <- abund_mat[i, j]
+      n_i  <- Sum.sites[i]
+
+      if (n_ij > 0) {
+        p_ij <- n_ij / n_i
+        LPCD.alpha[i, j] <- (n_ij / total_sum) * log(1 + p_ij)
+      } else {
+        LPCD.alpha[i, j] <- if (na.as.zero) 0 else NA_real_
+      }
+    }
+  }
+
+  niche.breadth <- apply(LPCD.alpha, 2, mean, na.rm = TRUE)
+  names(niche.breadth) <- colnames(abund_mat)
+
+  return(niche.breadth)
+}
+
+
+# =============================================================================
+# 11. ALPHA DIVERSITY CONTRIBUTION SD (LPCD_sd)
+# =============================================================================
+
+#' Calculate Alpha Diversity Contribution SD Niche Breadth
+#'
+#' Estimates niche breadth as the inverse of the standard deviation of
+#' species' contributions to local alpha diversity. Based on occurrence only.
+#'
+#' @param abund_mat Abundance matrix (sites x species)
+#' @param na.as.zero Logical; treat NAs as zeros? (default: TRUE)
+#' @return Named vector of niche breadths
+estimate_nicheBreadth_from_alphaSD <- function(abund_mat, na.as.zero = TRUE) {
+
+  n.sites <- nrow(abund_mat)
+  n.species <- ncol(abund_mat)
+
+  Sum.sites <- rowSums(abund_mat)
+  total_sum <- sum(abund_mat)
+
+  LPCD.alpha <- matrix(0, n.sites, n.species)
+
+  for (i in 1:n.sites) {
+    for (j in 1:n.species) {
+      n_ij <- abund_mat[i, j]
+      n_i  <- Sum.sites[i]
+
+      if (n_ij > 0) {
+        p_ij <- n_ij / n_i
+        LPCD.alpha[i, j] <- (n_ij / total_sum) * log(1 + p_ij)
+      } else {
+        LPCD.alpha[i, j] <- if (na.as.zero) 0 else NA_real_
+      }
+    }
+  }
+
+  alpha_sd <- apply(LPCD.alpha, 2, sd, na.rm = TRUE)
+  niche.breadth <- 1 / (alpha_sd + 1e-8)
+  names(niche.breadth) <- colnames(abund_mat)
 
   return(niche.breadth)
 }
@@ -564,7 +929,7 @@ estimate_nicheBreadth_avg.Dist <- function(distribution_data, env_variables = NU
 
 #' Calculate All Niche Breadth Metrics
 #'
-#' Wrapper function that calculates all 9 niche breadth metrics for a given
+#' Wrapper function that calculates all 11 niche breadth metrics for a given
 #' community dataset.
 #'
 #' @param sim.com Presence-absence matrix (sites x species)
@@ -572,6 +937,7 @@ estimate_nicheBreadth_avg.Dist <- function(distribution_data, env_variables = NU
 #' @param niche.breadth Optional oracle niche breadth (named vector)
 #' @param co_occur_params List of parameters for co_occur function
 #' @param nr_params List of parameters for nicheROVER function
+#' @param gam_params List of parameters for GAM function
 #' @param nlv Number of latent variables for ecoCopula
 #' @param verbose Logical; print progress?
 #' @param empirical Logical; if TRUE, uses empirical data settings for hypervolume
@@ -582,6 +948,9 @@ calculate_all_metrics <- function(sim.com, env_vars, niche.breadth = NULL,
                                                           psample = 4,
                                                           psample2 = 2),
                                    nr_params = list(nsamples = 10),
+                                   gam_params = list(summary_method = "determinant",
+                                                     model_type = "hybrid",
+                                                     joint_engine = "ti"),
                                    nlv = 5, verbose = TRUE,
                                    empirical = FALSE) {
 
@@ -613,20 +982,32 @@ calculate_all_metrics <- function(sim.com, env_vars, niche.breadth = NULL,
                                    niche.breadth = niche.breadth,
                                    empirical = empirical)
 
-  if (verbose) message("Calculating Blondel hypervolume...")
+  if (verbose) message("Calculating Blonder hypervolume...")
   hv_result <- hypervolume_blond_fun(sim.com, env_vars,
                                       niche.breadth = niche.breadth,
                                       empirical = empirical)
 
   if (verbose) message("Calculating GAM-based niche breadth...")
-  gam_result <- estimate_nicheBreadth_Gam(sim.com, env_vars, verbose = verbose)
+  gam_result <- estimate_nicheBreadth_Gam_general(
+    sim.com, env_vars,
+    summary_method = gam_params$summary_method,
+    model_type = gam_params$model_type,
+    joint_engine = gam_params$joint_engine,
+    verbose = verbose
+  )
 
   if (verbose) message("Calculating latent variable niche breadth...")
-  latent_result <- estimate_nicheBreadth_Latents(sim.com, env_vars,
+  latent_result <- estimate_nicheBreadth_Latents(sim.com,
                                                   nlv = nlv, verbose = verbose)
 
-  if (verbose) message("Calculating average distance niche breadth...")
-  dist_result <- estimate_nicheBreadth_avg.Dist(sim.com, env_vars)
+  if (verbose) message("Calculating weighted env distance niche breadth...")
+  dist_result <- estimate_nicheBreadth_avgDist_weighted(sim.com, env_vars)
+
+  if (verbose) message("Calculating LPCD mean niche breadth...")
+  lpcd_mean_result <- estimate_nicheBreadth_from_alphaMean(sim.com)
+
+  if (verbose) message("Calculating LPCD SD niche breadth...")
+  lpcd_sd_result <- estimate_nicheBreadth_from_alphaSD(sim.com)
 
   # Combine all results
   result_df <- data.frame(
@@ -640,6 +1021,8 @@ calculate_all_metrics <- function(sim.com, env_vars, niche.breadth = NULL,
     nb_Gam = gam_result$Niche_Breadth[match(co_occ_result$sci.name, rownames(gam_result))],
     nb_latent = latent_result[match(co_occ_result$sci.name, names(latent_result))],
     nb_dist = dist_result[match(co_occ_result$sci.name, names(dist_result))],
+    LPCD_mean = lpcd_mean_result[match(co_occ_result$sci.name, names(lpcd_mean_result))],
+    LPCD_sd = lpcd_sd_result[match(co_occ_result$sci.name, names(lpcd_sd_result))],
     stringsAsFactors = FALSE
   )
 

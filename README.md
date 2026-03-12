@@ -29,7 +29,7 @@ Ch1-refactored/
 │   ├── helper_functions.R        # Utility functions
 │   ├── simulation_functions.R    # Unified Gaussian response functions
 │   ├── theta_functions.R         # Co-occurrence theta metrics
-│   └── niche_breadth_metrics.R   # All 9 niche breadth metrics
+│   └── niche_breadth_metrics.R   # All 11 niche breadth metrics
 │
 ├── 01_simulations.Rmd            # Main simulation script
 ├── 02_metrics_agreement.Rmd      # Metrics comparison analysis
@@ -100,7 +100,7 @@ The analysis covers 12 simulation scenarios:
 
 ## Niche Breadth Metrics
 
-Nine metrics are calculated for each species:
+Eleven metrics are calculated for each species:
 
 | Metric | Function | Package | Description |
 |--------|----------|---------|-------------|
@@ -110,9 +110,11 @@ Nine metrics are calculated for each species:
 | om_tol | `omi_params_fun()` | ade4 | OMI tolerance |
 | nr_hv | `nr_hypervolume_fun()` | nicheROVER | Bayesian hypervolume |
 | hv_blond | `hypervolume_blond_fun()` | hypervolume | Kernel density hypervolume |
-| nb_Gam | `estimate_nicheBreadth_Gam()` | mgcv | GAM-based niche breadth |
-| nb_latent | `estimate_nicheBreadth_Latents()` | ecoCopula | Latent variable model |
-| nb_dist | `estimate_nicheBreadth_avg.Dist()` | vegan | Average Hellinger distance |
+| nb_Gam | `estimate_nicheBreadth_Gam_general()` | mgcv | GAM-based niche breadth (hybrid/determinant) |
+| nb_latent | `estimate_nicheBreadth_Latents()` | ecoCopula | Latent variable model (covariance-based) |
+| nb_dist | `estimate_nicheBreadth_avgDist_weighted()` | base | Weighted average environmental distance |
+| LPCD_mean | `estimate_nicheBreadth_from_alphaMean()` | base | Alpha diversity contribution (mean) |
+| LPCD_sd | `estimate_nicheBreadth_from_alphaSD()` | base | Alpha diversity contribution (SD) |
 
 ## Key Functions
 
@@ -133,7 +135,7 @@ generate_community(
 ### Calculate All Metrics
 
 ```r
-# Wrapper function calculates all 9 metrics at once
+# Wrapper function calculates all 11 metrics at once
 results <- calculate_all_metrics(
   sim.com = presence_absence_matrix,
   env_vars = environmental_variables
@@ -155,7 +157,7 @@ results/
 ├── matrices_list.json
 ├── oracle_correlations_summary.csv
 ├── rank_rmse_summary.csv
-└── spearman_vs_rmse_comparison.csv
+└── pearson_vs_rmse_comparison.csv
 ```
 
 ## Authors

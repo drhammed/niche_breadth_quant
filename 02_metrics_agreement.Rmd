@@ -21,7 +21,7 @@ knitr::opts_chunk$set(
 
 # Introduction
 
-This markdown analyzes metrics agreement among 9 niche breadth metrics across 12 simulation scenarios and empirical data. Here, I examine:
+This markdown analyzes metrics agreement among 11 niche breadth metrics across 12 simulation scenarios and empirical data. Here, I examine:
 
 1. Correlation between metrics and known niche breadth
 2. Agreement among metrics across scenarios
@@ -61,9 +61,9 @@ for (file in rds_files) {
 empirical_file <- "results/empirical/result_df_empirical.rds"
 if (file.exists(empirical_file)) {
   result_df_empirical <- readRDS(empirical_file)
-  message(sprintf("Loaded %d scenario results + empirical data", length(all_results)))
+  print(sprintf("Loaded %d scenario results + empirical data", length(all_results)))
 } else {
-  message(sprintf("Loaded %d scenario results (no empirical data found)", length(all_results)))
+  print(sprintf("Loaded %d scenario results (no empirical data found)", length(all_results)))
 }
 ```
 
@@ -73,9 +73,10 @@ For each scenario, aggregate metrics across iterations to get mean values per sp
 
 ```{r aggregate-results}
 aggregate_niche_breadth <- function(df) {
+  metric_cols <- setdiff(colnames(df), c("iteration", "sci.name", "niche_breadth"))
   df %>%
     dplyr::group_by(sci.name) %>%
-    dplyr::summarise(dplyr::across(SimpSSI:nb_dist, ~mean(.x, na.rm = TRUE)))
+    dplyr::summarise(dplyr::across(dplyr::all_of(metric_cols), ~mean(.x, na.rm = TRUE)))
 }
 
 # Aggregate all scenario results
@@ -158,7 +159,7 @@ ggplot(mean_corr_long, aes(x = metric, y = scenario, fill = correlation)) +
   geom_text(aes(label = sprintf("%.2f", correlation)), size = 3) +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Mean Spearman Correlation with Oracle Niche Breadth",
+  labs(title = "Mean Pearson Correlation with Oracle Niche Breadth",
        x = "Metric", y = "Scenario", fill = "r")
 
 
@@ -168,7 +169,7 @@ ggplot(mean_corr_long, aes(x = metric, y = scenario, fill = correlation)) +
 
 ```{r correlation-table}
 knitr::kable(round(mean_corr_df[, -ncol(mean_corr_df)], 3),
-             caption = "Mean Spearman Correlations with Oracle Niche Breadth")
+             caption = "Mean Pearson Correlations with Oracle Niche Breadth")
 ```
 
 # Part 2: Metric Behavior Across Scenarios
@@ -304,16 +305,19 @@ print(round(pca_cv$eig, 2))
 ## Variability Across Scenarios
 
 ```{r variability-plot}
-# Standard deviation of mean values across scenarios
-metric_sd <- apply(mean_df, 2, sd, na.rm = TRUE)
-metric_var_df <- data.frame(Metric = names(metric_sd), SD = metric_sd)
+# Coefficient of variation (CV) of mean values across scenarios
+# CV = SD/|mean| — measures relative variability, comparable across different scales
+metric_means <- apply(mean_df, 2, mean, na.rm = TRUE)
+metric_sds <- apply(mean_df, 2, sd, na.rm = TRUE)
+metric_cv <- metric_sds / abs(metric_means)
+metric_var_df <- data.frame(Metric = names(metric_cv), CV = metric_cv)
 
-ggplot(metric_var_df, aes(x = reorder(Metric, -SD), y = SD)) +
+ggplot(metric_var_df, aes(x = reorder(Metric, -CV), y = CV)) +
   geom_bar(stat = "identity", fill = "steelblue") +
   coord_flip() +
   labs(title = "Metric Variability Across Scenarios",
-       subtitle = "Standard deviation of mean values",
-       x = "Metric", y = "SD across scenarios") +
+       subtitle = "Coefficient of variation of mean values",
+       x = "Metric", y = "CV across scenarios") +
   theme_minimal()
 ```
 
@@ -327,7 +331,7 @@ flatten_corr <- function(mat) {
   mat[lower.tri(mat, diag = FALSE)]
 }
 
-# Calculate Spearman correlation matrix for each scenario
+# Calculate Pearson correlation matrix for each scenario
 # For simulation scenarios: compute correlations per iteration, then average
 corr_list <- lapply(names(matrices_list), function(name) {
   raw_df <- all_results[[name]]
@@ -377,6 +381,198 @@ ggplot(scores_corr, aes(x = Dim.1, y = Dim.2, label = Scenario)) +
        x = sprintf("PC1 (%.1f%% variance)", pca_corr$eig[1, 2]),
        y = sprintf("PC2 (%.1f%% variance)", pca_corr$eig[2, 2])) +
   theme_minimal()
+```
+
+
+# Publication Figures
+
+```{r setup-figures-dir}
+# Figures directory
+figures_dir <- "results/figures"
+if (!dir.exists(figures_dir)) {
+  dir.create(figures_dir, recursive = TRUE)
+}
+
+# Publication theme
+theme_publication <- function(base_size = 12) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.title = element_text(face = "bold", size = rel(1.2), hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(color = "black"),
+      legend.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank(),
+      strip.text = element_text(face = "bold")
+    )
+}
+```
+
+
+
+## Empirical vs Simulated: Distance-Based Comparison
+
+This section compares the empirical correlation structure to all simulation scenarios using Euclidean distance between flattened pairwise correlation vectors.
+
+```{r distance-heatmap, eval=exists("result_df_empirical"), fig.width=12, fig.height=10}
+
+# --- (A) Euclidean distance heatmap between all scenario correlation vectors ---
+
+# corr_flat_list already contains flattened lower-triangle correlation vectors
+# (from the Correlation Structure per Scenario section above)
+
+# Build distance matrix between all scenarios (including Empirical)
+corr_flat_mat <- do.call(rbind, corr_flat_list)
+rownames(corr_flat_mat) <- names(corr_list)
+
+dist_raw <- as.matrix(dist(corr_flat_mat, method = "euclidean"))
+
+# Normalize to [0, 1] range
+dist_between <- dist_raw / max(dist_raw)
+
+# Pretty labels for scenarios
+pretty_label <- function(name) {
+  name_clean <- gsub("result_df_", "", name)
+  name_clean <- gsub("_", " - ", name_clean)
+  # Capitalize first letter of each word
+  name_clean <- gsub("(^|\\s|-)([a-z])", "\\1\\U\\2", name_clean, perl = TRUE)
+  name_clean
+}
+
+pretty_names <- sapply(rownames(dist_between), pretty_label)
+rownames(dist_between) <- pretty_names
+colnames(dist_between) <- pretty_names
+
+# Heatmap of distances
+dist_long <- as.data.frame(as.table(dist_between))
+colnames(dist_long) <- c("Scenario1", "Scenario2", "Distance")
+
+fig_dist_heatmap <- ggplot(dist_long, aes(x = Scenario1, y = Scenario2, fill = Distance)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  scale_fill_gradient2(
+    low = "#2166AC", mid = "white", high = "#B2182B",
+    midpoint = median(dist_long$Distance),
+    name = "Distance"
+  ) +
+  labs(title = "(A)") +
+  theme_publication() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 8),
+    axis.title = element_blank()
+  )
+
+```
+
+```{r distance-density, eval=exists("result_df_empirical"), fig.width=8, fig.height=6}
+# --- (B) Density plot: Empirical vs Simulation distances vs Simulation vs Simulation ---
+
+# Identify empirical row
+emp_label <- pretty_label("Empirical")
+sim_labels <- setdiff(rownames(dist_between), emp_label)
+
+# Empirical vs simulation distances
+emp_vs_sim <- dist_between[emp_label, sim_labels]
+
+# Simulation vs simulation distances (upper triangle, excluding empirical)
+sim_dist <- dist_between[sim_labels, sim_labels]
+sim_vs_sim <- sim_dist[upper.tri(sim_dist)]
+
+density_df <- rbind(
+  data.frame(Distance = emp_vs_sim, Type = "Empirical vs Simulation"),
+  data.frame(Distance = sim_vs_sim, Type = "Simulation vs Simulation")
+)
+
+fig_dist_density <- ggplot(density_df, aes(x = Distance, fill = Type)) +
+  geom_density(alpha = 0.5, color = "black") +
+  scale_fill_manual(values = c("Empirical vs Simulation" = "#E41A1C",
+                                "Simulation vs Simulation" = "gray70")) +
+  labs(title = "(B)",
+       x = "Distance", y = "Density") +
+  theme_publication() +
+  theme(legend.position = "bottom",
+        legend.background = element_rect(fill = "white", color = NA))
+```
+
+```{r distance-percentile, eval=exists("result_df_empirical"), fig.width=8, fig.height=6}
+# --- (C) Percentile bar plot: where does each scenario's distance to empirical fall? ---
+
+# For each simulation scenario, compute percentile of its distance to empirical
+# among all simulation-simulation distances
+percentile_df <- data.frame(
+  Scenario = sim_labels,
+  Distance_to_Empirical = emp_vs_sim[sim_labels],
+  Percentile = sapply(emp_vs_sim[sim_labels], function(d) mean(sim_vs_sim <= d)),
+  stringsAsFactors = FALSE
+)
+
+# Add response type for coloring
+percentile_df$Response_Type <- ifelse(grepl("Asy|asy", percentile_df$Scenario, ignore.case = TRUE),
+                                       "Asymmetric", "Symmetric")
+
+# Sort by percentile
+percentile_df <- percentile_df[order(percentile_df$Percentile), ]
+percentile_df$Scenario <- factor(percentile_df$Scenario, levels = percentile_df$Scenario)
+
+fig_dist_percentile <- ggplot(percentile_df, aes(x = Percentile, y = Scenario, fill = Response_Type)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_fill_manual(values = c("Asymmetric" = "#E41A1C", "Symmetric" = "#377EB8"),
+                    name = "Response type") +
+  labs(title = "(C)",
+       x = "Percentile", y = "Simulation Scenario") +
+  theme_publication() +
+  theme(axis.text.y = element_text(size = 8))
+```
+
+```{r distance-combined, eval=exists("result_df_empirical"), fig.width=16, fig.height=12}
+# --- Combined figure ---
+fig_combined_distance <- ggarrange(
+  fig_dist_heatmap,
+  ggarrange(fig_dist_density, fig_dist_percentile, ncol = 2, widths = c(1, 1)),
+  nrow = 2, heights = c(1.2, 1)
+)
+
+print(fig_combined_distance)
+
+ggsave(file.path(figures_dir, "fig_empirical_vs_simulated_distances.png"),
+       fig_combined_distance, width = 16, height = 12, dpi = 300)
+ggsave(file.path(figures_dir, "fig_empirical_vs_simulated_distances.pdf"),
+       fig_combined_distance, width = 16, height = 12)
+```
+
+## Distribution of Pairwise Method Correlations
+
+```{r correlation-density, eval=exists("result_df_empirical"), fig.width=8, fig.height=6}
+# Density plot of pairwise correlations between methods: Empirical vs Simulated
+
+# Empirical correlation values (lower triangle)
+emp_corr_vals <- flatten_corr(corr_list[["Empirical"]])
+
+# Simulated correlation values (pool all scenario lower triangles)
+sim_scenario_names <- setdiff(names(corr_list), "Empirical")
+sim_corr_vals <- unlist(lapply(sim_scenario_names, function(nm) flatten_corr(corr_list[[nm]])))
+
+corr_density_df <- rbind(
+  data.frame(Correlation = emp_corr_vals, Type = "Empirical"),
+  data.frame(Correlation = sim_corr_vals, Type = "Simulated")
+)
+
+fig_corr_density <- ggplot(corr_density_df, aes(x = Correlation, fill = Type)) +
+  geom_density(alpha = 0.5, color = "black") +
+  scale_fill_manual(values = c("Empirical" = "#E41A1C", "Simulated" = "gray70")) +
+  labs(title = "Distribution of pairwise method correlations",
+       x = "Pairwise correlation between methods",
+       y = "Density") +
+  theme_publication() +
+  theme(legend.position = "bottom",
+        legend.background = element_rect(fill = "white", color = NA))
+
+print(fig_corr_density)
+
+ggsave(file.path(figures_dir, "fig_pairwise_correlation_density.png"),
+       fig_corr_density, width = 8, height = 6, dpi = 300)
+ggsave(file.path(figures_dir, "fig_pairwise_correlation_density.pdf"),
+       fig_corr_density, width = 8, height = 6)
 ```
 
 # Part 5: Empirical Data Comparison
@@ -477,29 +673,6 @@ if (nrow(mean_corr_df) > 0) {
 }
 ```
 
-# Publication Figures
-
-```{r setup-figures-dir}
-# Figures directory
-figures_dir <- "results/figures"
-if (!dir.exists(figures_dir)) {
-  dir.create(figures_dir, recursive = TRUE)
-}
-
-# Publication theme
-theme_publication <- function(base_size = 12) {
-  theme_minimal(base_size = base_size) +
-    theme(
-      plot.title = element_text(face = "bold", size = rel(1.2), hjust = 0.5),
-      plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
-      axis.title = element_text(face = "bold"),
-      axis.text = element_text(color = "black"),
-      legend.title = element_text(face = "bold"),
-      panel.grid.minor = element_blank(),
-      strip.text = element_text(face = "bold")
-    )
-}
-```
 
 ## Figure 1: Oracle Correlation Heatmap
 
@@ -542,7 +715,7 @@ fig1_heatmap <- ggplot(mean_corr_plot, aes(x = metric, y = label, fill = correla
   scale_fill_gradient2(
     low = "#2166AC", mid = "white", high = "#B2182B",
     midpoint = 0, limits = c(-1, 1),
-    name = "Spearman\nCorrelation"
+    name = "Pearson\nCorrelation"
   ) +
   geom_text(aes(label = sprintf("%.2f", correlation)), size = 3.5, color = "black") +
   #scale_x_discrete(position = "top") +
@@ -786,7 +959,7 @@ figS2_env_bar <- ggplot(env_mean, aes(x = metric, y = mean_corr, fill = n_env)) 
     title = "Metric Performance by Environmental Complexity",
     subtitle = "Mean Correlation with known niche breadth ± SE",
     x = "Niche Breadth Metric",
-    y = "Mean Spearman Correlation"
+    y = "Mean Pearson Correlation"
   ) +
   theme_publication() +
   theme(
@@ -829,12 +1002,12 @@ fig_emp_heatmap <- ggplot(emp_cor_long, aes(x = Metric1, y = Metric2, fill = Cor
   scale_fill_gradient2(
     low = "#2166AC", mid = "white", high = "#B2182B",
     midpoint = 0, limits = c(-1, 1),
-    name = "Spearman\nCorrelation"
+    name = "Pearson\nCorrelation"
   ) +
   geom_text(aes(label = sprintf("%.2f", Correlation)), size = 3.5) +
   labs(
     title = "Inter-Metric Correlations (Empirical Data)",
-    subtitle = "Hierarchically clustered Correlations among 9 niche breadth metrics",
+    subtitle = "Hierarchically clustered Correlations among 11 niche breadth metrics",
     x = "", y = ""
   ) +
   theme_publication() +
@@ -872,7 +1045,7 @@ dev.off()
 
 # Display
 plot(hc, main = "Metric Clustering (Empirical Data)",
-     sub = "Average linkage clustering based on 1 - Spearman correlation",
+     sub = "Average linkage clustering based on 1 - Pearson correlation",
      xlab = "", ylab = "Distance (1 - r)")
 ```
 

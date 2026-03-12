@@ -1,6 +1,6 @@
 # Full 900-observation JSON for all simulation scenarios
 # Each scenario has 30 iterations × 30 species = 900 rows
-# Columns: iteration, sci.name, niche_breadth (oracle), + 9 niche breadth metrics
+# Columns: iteration, sci.name, niche_breadth (oracle), + 11 niche breadth metrics
 
 library(jsonlite)
 
@@ -16,15 +16,16 @@ for (f in rds_files) {
   scenario_name <- tools::file_path_sans_ext(basename(f))
   df <- readRDS(f)
 
-  # Keep relevant columns: iteration, sci.name, niche_breadth, and the 9 metrics
+  # Keep relevant columns: iteration, sci.name, niche_breadth, and the 11 metrics
   metric_cols <- c("SimpSSI", "beta.a", "beta.w", "om_tol",
-                    "nr_hv", "hv_blond", "nb_Gam", "nb_latent", "nb_dist")
+                    "nr_hv", "hv_blond", "nb_Gam", "nb_latent", "nb_dist",
+                    "LPCD_mean", "LPCD_sd")
   keep_cols <- intersect(c("iteration", "sci.name", "niche_breadth", metric_cols), colnames(df))
   df <- df[, keep_cols, drop = FALSE]
 
-  # Round numeric columns for readability
+  # Round numeric columns for readability (use more digits for very small values)
   num_cols <- sapply(df, is.numeric)
-  df[num_cols] <- lapply(df[num_cols], round, digits = 4)
+  df[num_cols] <- lapply(df[num_cols], signif, digits = 4)
 
   full_observations[[scenario_name]] <- as.list(df)
 }

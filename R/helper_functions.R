@@ -134,9 +134,9 @@ scale_metrics <- function(df, cols = NULL) {
 }
 
 
-#' Calculate Spearman Correlation with Oracle
+#' Calculate Pearson Correlation with Oracle
 #'
-#' Computes Spearman correlation between each metric and the oracle niche breadth.
+#' Computes Pearson correlation between each metric and the oracle niche breadth.
 #'
 #' @param df Data frame with niche_breadth and metric columns
 #' @param oracle_col Name of the oracle niche breadth column
@@ -149,7 +149,7 @@ calculate_metric_correlations <- function(df, oracle_col = "niche_breadth",
   }
 
   correlations <- sapply(metric_cols, function(col) {
-    cor(df[[oracle_col]], df[[col]], method = "spearman", use = "complete.obs")
+    cor(df[[oracle_col]], df[[col]], method = "pearson", use = "complete.obs")
   })
 
   result <- data.frame(

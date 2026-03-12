@@ -1,0 +1,5 @@
+library(jsonlite)
+df <- readRDS("results/empirical/result_df_empirical.rds")
+num_cols <- sapply(df, is.numeric)
+df[num_cols] <- lapply(df[num_cols], signif, digits = 4)
+write_json(df, "results/empirical/result_df_empirical.json", pretty = TRUE, auto_unbox = TRUE)

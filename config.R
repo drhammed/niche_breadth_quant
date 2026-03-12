@@ -1,5 +1,5 @@
 #' =============================================================================
-#' Configuration file for Chapter 1- Niche Breadth Quantification 
+#' Configuration file for Niche Breadth Quantification Paper
 #' =============================================================================
 #'
 #' This file contains all configurable parameters for the simulation study.
